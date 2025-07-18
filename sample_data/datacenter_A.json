@@ -1,0 +1,22 @@
+{
+  "alpha": {
+    "cpu": 67.2,
+    "mem": 14.8,
+    "energy": {
+      "kwh": 162.5,
+      "renewable": 62.1
+    },
+    "net": {
+      "in": 125.6,
+      "out": 98.3
+    },
+    "storage": {
+      "read": 320.1,
+      "write": 290.4
+    },
+    "temp": {
+      "int": 34.5,
+      "ext": 40.1
+    }
+  }
+}

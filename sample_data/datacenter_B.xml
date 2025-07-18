@@ -1,0 +1,28 @@
+<beta>
+  <compute>
+    <cpu>70.9</cpu>
+  </compute>
+  <hardware>
+    <memory>
+      <used>13.7</used>
+    </memory>
+  </hardware>
+  <elec>
+    <power>158.2</power>
+  </elec>
+  <power>
+    <solar>48.9</solar>
+  </power>
+  <network>
+    <incoming>132.7</incoming>
+    <outgoing>101.6</outgoing>
+  </network>
+  <disk>
+    <readIO>310.2</readIO>
+    <writeIO>295.7</writeIO>
+  </disk>
+  <env>
+    <internalTemp>36.2</internalTemp>
+    <externalTemp>39.8</externalTemp>
+  </env>
+</beta>

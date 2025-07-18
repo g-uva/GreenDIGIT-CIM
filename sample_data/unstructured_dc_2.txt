@@ -1,0 +1,5 @@
+
+Report Log:
+PowerDraw: 304W, Temp ~ 32C
+CPU - 88.2%, Mem Usage = 12.3GB
+Incoming net: 150.2MB/s; Outgoing net: 120.4MB/s
