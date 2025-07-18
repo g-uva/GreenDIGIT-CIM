@@ -3,15 +3,25 @@ This project implements the Common Information Model for GreenDIGIT with Unified
 
 # Project Structure
 cloud_metrics_api/ –> _Main application logic including ingestion, parsing, mapping, and API interface._
+
 cloud_metrics_api/ingestion_controller/ –> _Orchestrates ingestion from files or real-time sources and manages classification and mapping._
+
 cloud_metrics_api/parsers/ –> _Parsers for structured (JSON, XML, YAML, CSV) and unstructured (text) files._
+
 cloud_metrics_api/project_models/ –> _SQLAlchemy ORM models for namespace elements and learned metric keywords._
+
 cloud_metrics_api/sql_models/ –> _ORM models for metric definitions, upload logs, and datacenters._
+
 cloud_metrics_api/sql_services/ –> _DB insert and mapping services for PostgreSQL._
+
 cloud_metrics_api/project_config/ –> _Configuration for PostgreSQL and InfluxDB connectivity._
+
 cloud_metrics_api/utils/ –> _Helper functions for syncing mapping with metric_mapping.json._
+
 cloud_metrics_api/streamlit_uploader.py –> _Streamlit-based UI to upload files and visualize ingestion flow._
+
 cloud_metrics_api/unified_ingestion.py –> _Command-line tool to ingest and process metrics from uploaded files._
+
 cloud_metrics_api/namespace_mapper_core.py –> _The core router module that bridges parsing, classification, and storage services._
 
 # Execution Flow
