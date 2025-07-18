@@ -42,9 +42,12 @@ To run manually via CLI:
 _python cloud_metrics_api/unified_ingestion.py --file path/to/file.json --datacenter SampleDC_
 
 # Setup Instructions
--> Install dependencies: `pip install -r requirements.txt`
+-> Install dependencies: `pip install -r requirements.txt`.
+
 -> Ensure PostgreSQL and InfluxDB are running.
+
 -> Configure `project_config/postgres_config.py` and `influx_service.py` with appropriate credentials.
+
 -> Run `create_schema.py` to initialize the database tables.
 
 # Note
