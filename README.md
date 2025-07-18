@@ -1,1 +1,2 @@
-# This is my first commit.
+# GreenDIGIT-CIM Project
+Description to-do.
