@@ -1,1 +1,2 @@
 This is just a sample file for testing.
+This is another line for the command line.
