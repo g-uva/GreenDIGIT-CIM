@@ -112,7 +112,7 @@ def token_ui():
     <html>
     <body>
         <h2>Login to generate token</h2>
-        <form action="/login" method="post">
+        <form action="login" method="post">
             <input name="username" type="email" placeholder="Email" required>
             <input name="password" type="password" placeholder="Password" required>
             <button type="submit">Get Token</button>
