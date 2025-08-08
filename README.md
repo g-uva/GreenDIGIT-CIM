@@ -106,7 +106,7 @@ We use [FastAPI](https://fastapi.tiangolo.com/)—a simple Python RESTful API se
 ### Integration & Next Steps
 - [ ] Separate DB from API, because I am guessing that if we rebuild using Docker, this will reset the DB @goncalo.
 - [ ] Step by step tutorial for: (1) run uvicorn locally, (2) running Dockerfile (server context), showing the endpoints (UI, OpenAPI, and others)
-- [ ] Integrate in the server :point_right: mc-a4.lab.uvalight.net
+- [x] Integrate in the server :point_right: mc-a4.lab.uvalight.net using a reverse-proxy NGINX.
 - [ ] Integrate `POST` service for CNR database—do this programmatically.
 - [ ] Deploy and connect CIM service (transformation).
 - [ ] Further discussions will determine the best approach for transforming and storing metrics, as well as any additional integration requirements.
