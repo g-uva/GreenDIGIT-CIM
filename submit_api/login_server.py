@@ -98,7 +98,7 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
         db.refresh(db_user)
         user = db_user
     elif not pwd_context.verify(form_data.password, user.hashed_password):
-        raise HTTPException(status_code=400, detail="Incorrect password")
+        raise HTTPException(status_code=400, detail="Incorrect password. \n If you have forgotten your password please contact the GreenDIGIT team: goncalo.ferreira@student.uva.nl.")
     token_data = {
         "sub": user.email,
         "exp": int(time.time()) + ACCESS_TOKEN_EXPIRE_SECONDS
