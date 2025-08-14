@@ -228,3 +228,25 @@ def get_my_metrics(publisher_email: str = Depends(verify_token)):
         if "timestamp" in d and not isinstance(d["timestamp"], str):
             d["timestamp"] = str(d["timestamp"])
     return docs
+
+
+class PasswordResetRequest(BaseModel):
+    new_password: str
+
+@app.post("/reset-password", tags=["Auth"], summary="Reset my password")
+def reset_password(
+    data: PasswordResetRequest,
+    publisher_email: str = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
+    """
+    Reset the password for the currently logged-in user.
+    Requires a valid Authorization: Bearer <token>.
+    """
+    user = db.query(User).filter(User.email == publisher_email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.hashed_password = pwd_context.hash(data.new_password)
+    db.commit()
+    return {"msg": "Password updated successfully"}

@@ -67,7 +67,7 @@ This service provides a secure API for collecting and aggregating CIM metrics fr
 
 ### Usage
 #### Authentication
-- Obtain a token via **POST /login** using form fields `email` and `password`. Your email must be registered beforehand. In case this does not work (wrong password/unknown), please contact goncalo.ferreira@student.uva.nl or a.tahir2@uva.nl.
+- Obtain a token via **POST /login** using form fields `email` and `password`. Your email must be registered beforehand, **and the password will be set on the first time you enter it**. In case this does not work (wrong password/unknown), please contact goncalo.ferreira@student.uva.nl or a.tahir2@uva.nl.
 - Then include `Authorization: Bearer <token>` on all protected requests.
 - Tokens expire after 1 day—in which case you must simply repeat the process again.
 
@@ -87,6 +87,8 @@ curl -X GET -H "Authorization: Bearer <TOKEN>" http://localhost:8000/metrics/me
 ```
 
 To check the FastAPI documentation, please visit: [mc-a4.lab.uvalight.net/gd-cim-api/docs](https://mc-a4.lab.uvalight.net/gd-cim-api/docs).
+
+---
 
 ### User Registration & Authentication
 
