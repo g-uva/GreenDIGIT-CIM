@@ -66,7 +66,27 @@ _python cloud_metrics_api/unified_ingestion.py --file path/to/file.json --datace
 This service provides a secure API for collecting and aggregating CIM metrics from authorised partners. Authentication is managed via a list of allowed emails and token-based access. The service is built with FastAPI and runs on a Uvicorn server, designed for easy integration and future extensibility.
 
 ### Usage
+#### Authentication
+- Obtain a token via **POST /login** using form fields `email` and `password`. Your email must be registered beforehand. In case this does not work (wrong password/unknown), please contact goncalo.ferreira@student.uva.nl or a.tahir2@uva.nl.
+- Then include `Authorization: Bearer <token>` on all protected requests.
+- Tokens expire after 1 day—in which case you must simply repeat the process again.
 
+#### Login & Content submission
+Below you can find a simple example of a `curl` script to submit the metrics. You use any platform for this effect, as long as the HTTP request is valid.
+```sh
+curl -X POST http://localhost:8000/submit \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"cpu_watts": 11.2, "mem_bytes": 734003200}'
+```
+
+#### List metrics
+Below you can find another `curl` script in order to list the metrics, if needed.
+```sh
+curl -X GET -H "Authorization: Bearer <TOKEN>" http://localhost:8000/metrics/me
+```
+
+To check the FastAPI documentation, please visit: [mc-a4.lab.uvalight.net/gd-cim-api/docs](https://mc-a4.lab.uvalight.net/gd-cim-api/docs).
 
 ### User Registration & Authentication
 

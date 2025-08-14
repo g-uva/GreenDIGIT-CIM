@@ -1,5 +1,5 @@
 services:
-  fastapi-app:
+  cim-fastapi:
     build: .
     working_dir: /app
     ports:

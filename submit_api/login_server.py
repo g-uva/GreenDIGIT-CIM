@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, Request, Body
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordRequestForm
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from typing import Any
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from typing import Optional
@@ -14,15 +15,26 @@ from sqlalchemy.orm import sessionmaker, declarative_base, Session
 
 load_dotenv()  # loads from .env in the current folder by default
 
+tags_metadata = [
+    {
+        "name": "Auth",
+        "description": "Login to obtain a JWT Bearer token. Use this token in `Authorization: Bearer <token>` on all protected endpoints.",
+    },
+    {
+        "name": "Metrics",
+        "description": "Submit and list metrics. **Requires** `Authorization: Bearer <token>`.",
+    },
+]
+
 app = FastAPI(
     title="GreenDIGIT WP6.2 CIM Metrics API",
     description=(
         "API for publishing metrics.\n\n"
         "**Authentication**\n\n"
-        "- Obtain a token via **POST /login** using form fields `username` and `password`.\n"
+        "- Obtain a token via **POST /login** using form fields `email` and `password`. Your email must be registered beforehand. In case this does not work (wrong password/unknown), please contact goncalo.ferreira@student.uva.nl or a.tahir2@uva.nl.\n"
         "- Then include `Authorization: Bearer <token>` on all protected requests.\n"
-        "- Tokens expire after 1 day.\n"
-    ),∫
+        "- Tokens expire after 1 day—in which case you must simply repeat the process again.\n"
+    ),
     version="1.0.0",
     openapi_tags=tags_metadata,
     swagger_ui_parameters={"persistAuthorization": True},
@@ -173,7 +185,20 @@ def token_ui():
 )
 async def submit(
     request: Request,
-    publisher_email: str = Depends(verify_token)
+    publisher_email: str = Depends(verify_token),
+    _example: Any = Body(
+        default=None,
+        examples={
+            "sample": {
+                "summary": "Example metric payload",
+                "value": {
+                    "cpu_watts": 11.2,
+                    "mem_bytes": 734003200,
+                    "labels": {"node": "compute-0", "job_id": "abc123"}
+                },
+            }
+        },
+    ),
 ):
     body = await request.json()
     ack = store_metric(publisher_email=publisher_email, body=body)
