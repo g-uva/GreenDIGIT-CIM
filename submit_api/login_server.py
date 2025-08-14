@@ -7,6 +7,9 @@ from jose import JWTError, jwt
 from typing import Optional
 import time
 import os
+from dotenv import load_dotenv
+
+load_dotenv()  # loads from .env in the current folder by default
 
 from sqlalchemy import create_engine, Column, String, Integer
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
@@ -15,9 +18,12 @@ app = FastAPI()
 security = HTTPBearer()
 
 # Secret key for JWT
-SECRET_KEY = "your-secret-key"
+SECRET_KEY = os.environ["JWT_TOKEN"]
+if not SECRET_KEY:
+    raise RuntimeError("JWT_TOKEN not valid. You must generate a valid token on the server. :)")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_SECONDS = 3600
+ACCESS_TOKEN_EXPIRE_SECONDS = 86400 # 1 day
+JWT_ISSUER = os.environ.get("JWT_ISSUER", "greendigit-login-uva")
 
 # SQLite setup
 SQLALCHEMY_DATABASE_URL = "sqlite:///./users.db"
@@ -56,7 +62,13 @@ def load_allowed_emails():
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)):
     token = credentials.credentials
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM],
+            options={"require": ["sub", "exp", "iat", "nbf", "iss"]},
+            issuer=JWT_ISSUER
+        )
         email: str = payload.get("sub")
         if email is None:
             raise HTTPException(status_code=401, detail="Invalid token")
@@ -99,9 +111,13 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
         user = db_user
     elif not pwd_context.verify(form_data.password, user.hashed_password):
         raise HTTPException(status_code=400, detail="Incorrect password. \n If you have forgotten your password please contact the GreenDIGIT team: goncalo.ferreira@student.uva.nl.")
+    now = int(time.time())
     token_data = {
         "sub": user.email,
-        "exp": int(time.time()) + ACCESS_TOKEN_EXPIRE_SECONDS
+        "iss": JWT_ISSUER,
+        "iat": now,
+        "nbf": now,
+        "exp": now + ACCESS_TOKEN_EXPIRE_SECONDS,
     }
     token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
     return {"access_token": token, "token_type": "bearer"}
@@ -117,11 +133,17 @@ def token_ui():
             <input name="password" type="password" placeholder="Password" required>
             <button type="submit">Get Token</button>
         </form>
+        <text>The token is only valid for 1 day. You must regenerate in order to access.</text>
+        <text>If you have problems loggin in, please contact:</text>
+        <ul style="">
+            <li>goncalo.ferreira@student.uva.nl</ul>
+            <li>a.tahir2@uva.nl</ul>
+        </ul>
     </body>
     </html>
     """
 
-@app.get("/submit")
+@app.post("/submit")
 async def submit(
     request: Request,
     token: None = Depends(verify_token)
