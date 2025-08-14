@@ -65,6 +65,9 @@ _python cloud_metrics_api/unified_ingestion.py --file path/to/file.json --datace
 
 This service provides a secure API for collecting and aggregating CIM metrics from authorised partners. Authentication is managed via a list of allowed emails and token-based access. The service is built with FastAPI and runs on a Uvicorn server, designed for easy integration and future extensibility.
 
+### Usage
+
+
 ### User Registration & Authentication
 
 - **Allowed Emails:**  
@@ -91,11 +94,8 @@ We use [FastAPI](https://fastapi.tiangolo.com/)—a simple Python RESTful API se
 
 ### Data Storage
 
-- **User Credentials:**  
-  Emails and hashed passwords are stored in a local SQLite database.
-
 - **Metrics Storage:**  
-  Submitted metrics will be transformed and stored in a SQL-compatible format (PostgreSQL) and organied into appropriate namespaces for future querying and analysis.
+  Submitted metrics will be transformed and stored in a SQL-compatible format (PostgreSQL) and organised into appropriate namespaces for future querying and analysis.
 
 ### Deployment
 
@@ -104,7 +104,7 @@ We use [FastAPI](https://fastapi.tiangolo.com/)—a simple Python RESTful API se
 - Docker support is available for easy deployment.
 
 ### Integration & Next Steps
-- [ ] Separate DB from API, because I am guessing that if we rebuild using Docker, this will reset the DB @goncalo.
+- [x] Separate DB from API, because I am guessing that if we rebuild using Docker, this will reset the DB @goncalo.
 - [ ] Step by step tutorial for: (1) run uvicorn locally, (2) running Dockerfile (server context), showing the endpoints (UI, OpenAPI, and others)
 - [x] Integrate in the server :point_right: mc-a4.lab.uvalight.net using a reverse-proxy NGINX.
 - [ ] Integrate `POST` service for CNR database—do this programmatically.

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Request, Form
+from fastapi import FastAPI, Depends, HTTPException, status, Request, Body
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordRequestForm
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -8,14 +8,26 @@ from typing import Optional
 import time
 import os
 from dotenv import load_dotenv
-from metrics_store import store_metric
-
-load_dotenv()  # loads from .env in the current folder by default
-
+from metrics_store import store_metric, _col
 from sqlalchemy import create_engine, Column, String, Integer
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 
-app = FastAPI()
+load_dotenv()  # loads from .env in the current folder by default
+
+app = FastAPI(
+    title="GreenDIGIT WP6.2 CIM Metrics API",
+    description=(
+        "API for publishing metrics.\n\n"
+        "**Authentication**\n\n"
+        "- Obtain a token via **POST /login** using form fields `username` and `password`.\n"
+        "- Then include `Authorization: Bearer <token>` on all protected requests.\n"
+        "- Tokens expire after 1 day.\n"
+    ),∫
+    version="1.0.0",
+    openapi_tags=tags_metadata,
+    swagger_ui_parameters={"persistAuthorization": True},
+    root_path="/gd-cim-api"
+)
 security = HTTPBearer()
 
 # Secret key for JWT
@@ -80,7 +92,15 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security), 
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-@app.post("/login")
+@app.post(
+    "/login",
+    tags=["Auth"],
+    summary="Login and get a JWT access token",
+    description=(
+        "Use form fields `username` (email) and `password`.\n\n"
+        "Returns a JWT for `Authorization: Bearer <token>`."
+    )
+)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     email_lower = form_data.username.strip().lower()
     user = db.query(User).filter(User.email == email_lower).first()
@@ -108,7 +128,13 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
     return {"access_token": token, "token_type": "bearer"}
 
-@app.get("/token-ui", response_class=HTMLResponse)
+@app.get(
+    "/token-ui",
+    tags=["Auth"],
+    summary="Simple HTML login to manually obtain a token",
+    description="Convenience page that POSTs to `/login`.",
+    response_class=HTMLResponse
+)
 def token_ui():
     return """
     <html>
@@ -129,7 +155,22 @@ def token_ui():
     </html>
     """
 
-@app.post("/submit")
+@app.post(
+    "/submit",
+    tags=["Metrics"],
+    summary="Submit a metrics JSON payload",
+    description=(
+        "Stores an arbitrary JSON document as a metric entry.\n\n"
+        "**Requires:** `Authorization: Bearer <token>`.\n\n"
+        "The `publisher_email` is derived from the token’s `sub` claim."
+    ),
+    responses={
+        200: {"description": "Stored successfully"},
+        400: {"description": "Invalid JSON body"},
+        401: {"description": "Missing/invalid Bearer token"},
+        500: {"description": "Database error"},
+    },
+)
 async def submit(
     request: Request,
     publisher_email: str = Depends(verify_token)
@@ -139,3 +180,26 @@ async def submit(
     if not ack.get("ok"):
         raise HTTPException(status_code=500, detail=f"DB error: {ack.get('error')}")
     return {"stored": ack}
+
+@app.get(
+    "/metrics/me",
+    tags=["Metrics"],
+    summary="List my published metrics",
+    description=(
+        "Returns all metrics published by the authenticated user.\n\n"
+        "**Requires:** `Authorization: Bearer <token>`."
+    ),
+    responses={
+        200: {"description": "List of metrics"},
+        401: {"description": "Missing/invalid Bearer token"},
+    },
+)
+def get_my_metrics(publisher_email: str = Depends(verify_token)):
+    # Query all documents for this publisher
+    docs = list(_col.find({"publisher_email": publisher_email}).sort("timestamp", -1))
+    # Convert ObjectId and datetime to strings
+    for d in docs:
+        d["_id"] = str(d["_id"])
+        if "timestamp" in d and not isinstance(d["timestamp"], str):
+            d["timestamp"] = str(d["timestamp"])
+    return docs
