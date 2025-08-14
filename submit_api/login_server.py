@@ -8,6 +8,7 @@ from typing import Optional
 import time
 import os
 from dotenv import load_dotenv
+from metrics_store import store_metric
 
 load_dotenv()  # loads from .env in the current folder by default
 
@@ -75,24 +76,9 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security), 
         user = db.query(User).filter(User.email == email).first()
         if not user:
             raise HTTPException(status_code=401, detail="Invalid token")
+        return email
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
-
-# @app.post("/register")
-# def register(email: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
-#     allowed_emails = load_allowed_emails()
-#     email_lower = email.strip().lower()
-#     if email_lower not in allowed_emails:
-#         raise HTTPException(status_code=403, detail="Email not allowed")
-#     user = db.query(User).filter(User.email == email_lower).first()
-#     if user:
-#         raise HTTPException(status_code=400, detail="Email already registered")
-#     hashed_password = pwd_context.hash(password)
-#     db_user = User(email=email_lower, hashed_password=hashed_password)
-#     db.add(db_user)
-#     db.commit()
-#     db.refresh(db_user)
-#     return {"msg": "User registered"}
 
 @app.post("/login")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -146,8 +132,10 @@ def token_ui():
 @app.post("/submit")
 async def submit(
     request: Request,
-    token: None = Depends(verify_token)
+    publisher_email: str = Depends(verify_token)
 ):
-    data = await request.json()
-    # Optionally, validate data with SubmitData(**data)
-    return {"received": data}
+    body = await request.json()
+    ack = store_metric(publisher_email=publisher_email, body=body)
+    if not ack.get("ok"):
+        raise HTTPException(status_code=500, detail=f"DB error: {ack.get('error')}")
+    return {"stored": ack}
