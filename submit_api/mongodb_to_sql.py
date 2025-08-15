@@ -36,12 +36,14 @@ def flatten(d: Any, prefix: str = "", out: Optional[Dict[str, Any]] = None) -> D
 DDL = """
 CREATE TABLE IF NOT EXISTS public.metrics_kv (
     id BIGSERIAL PRIMARY KEY,
+    source_oid TEXT NOT NULL,                -- Mongo _id as string
     publisher_email TEXT NOT NULL,
     ts TIMESTAMPTZ NOT NULL,
     key TEXT NOT NULL,
     value_text TEXT NULL,
     value_numeric DOUBLE PRECISION NULL,
-    value_json JSONB NULL
+    value_json JSONB NULL,
+    UNIQUE (source_oid, key)                 -- idempotency guard
 );
 CREATE INDEX IF NOT EXISTS ix_metrics_kv_email_ts ON public.metrics_kv (publisher_email, ts);
 CREATE INDEX IF NOT EXISTS ix_metrics_kv_key ON public.metrics_kv (key);
@@ -71,13 +73,14 @@ def rows_from_metric(m: Dict[str, Any]) -> List[Tuple]:
     Each row: (publisher_email, ts, key, value_text, value_numeric, value_json)
     """
     email = m["publisher_email"]
-    ts = m["timestamp"]  # ISO 8601 string
+    ts = m["timestamp"]              # ISO 8601
+    source_oid = m["_id"]            # already string in metrics_reader._to_dict
     body = m.get("body", {})
     flat = flatten(body)
     rows: List[Tuple] = []
     for k, v in flat.items():
         vt, vn, vj = cast_value(v)
-        rows.append((email, ts, k, vt, vn, vj))
+        rows.append((source_oid, email, ts, k, vt, vn, vj))
     return rows
 
 def export_incremental(limit: Optional[int] = None) -> int:
@@ -97,17 +100,18 @@ def export_incremental(limit: Optional[int] = None) -> int:
 
     ensure_schema()
     with connect(PG_DSN) as conn, conn.cursor() as cur:
-        execute_values(
-            cur,
-            """
-            INSERT INTO public.metrics_kv
-                (publisher_email, ts, key, value_text, value_numeric, value_json)
-            VALUES %s
-            """,
-            all_rows,
-            page_size=1000,
-        )
-        conn.commit()
+          execute_values(
+               cur,
+               """
+               INSERT INTO public.metrics_kv
+                    (source_oid, publisher_email, ts, key, value_text, value_numeric, value_json)
+               VALUES %s
+               ON CONFLICT (source_oid, key) DO NOTHING
+               """,
+               all_rows,
+               page_size=1000,
+          )
+          conn.commit()
 
     save_cursor(PROCESSOR_NAME, new_ts, new_id)
     return len(all_rows)
@@ -125,17 +129,18 @@ def export_full(publisher_email: Optional[str] = None, limit: Optional[int] = No
         all_rows.extend(rows_from_metric(m))
     ensure_schema()
     with connect(PG_DSN) as conn, conn.cursor() as cur:
-        execute_values(
-            cur,
-            """
-            INSERT INTO public.metrics_kv
-                (publisher_email, ts, key, value_text, value_numeric, value_json)
-            VALUES %s
-            """,
-            all_rows,
-            page_size=1000,
-        )
-        conn.commit()
+          execute_values(
+               cur,
+               """
+               INSERT INTO public.metrics_kv
+                    (source_oid, publisher_email, ts, key, value_text, value_numeric, value_json)
+               VALUES %s
+               ON CONFLICT (source_oid, key) DO NOTHING
+               """,
+               all_rows,
+               page_size=1000,
+          )
+          conn.commit()
     return len(all_rows)
 
 if __name__ == "__main__":

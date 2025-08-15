@@ -21,3 +21,16 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+  watcher:
+    build: .
+    command: ["python","watch_db_changes.py"]
+    depends_on:
+      - fastapi-app
+      - metrics-db
+      - postgres
+    environment:
+      - MONGO_URI=mongodb://metrics-db:27017/?replicaSet=rs0
+      - METRICS_DB_NAME=metricsdb
+      - METRICS_COLLECTION=metrics
+      - PG_DSN=postgresql://postgres:postgres@postgres:5432/postgres
+      - PROCESSOR_NAME=kv_exporter
