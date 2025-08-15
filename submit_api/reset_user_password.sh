@@ -9,4 +9,4 @@ fi
 EMAIL="$1"
 NEW_PASSWORD="$2"
 
-docker compose exec fastapi-app python reset_password_admin.py "$EMAIL" "$NEW_PASSWORD"
+docker compose exec cim-fastapi python reset_password_admin.py "$EMAIL" "$NEW_PASSWORD"

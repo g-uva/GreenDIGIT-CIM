@@ -1,5 +1,6 @@
 services:
   cim-fastapi:
+    container_name: cim-fastapi
     build: .
     working_dir: /app
     ports:
