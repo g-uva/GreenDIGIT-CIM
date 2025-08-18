@@ -111,7 +111,8 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security), 
     description=(
         "Use form fields `username` (email) and `password`.\n\n"
         "Returns a JWT for `Authorization: Bearer <token>`."
-    )
+    ),
+    response_class=HTMLResponse
 )
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     email_lower = form_data.username.strip().lower()
@@ -138,7 +139,193 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
         "exp": now + ACCESS_TOKEN_EXPIRE_SECONDS,
     }
     token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
-    return {"access_token": token, "token_type": "bearer"}
+    return f"""
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>API Token Generated</title>
+            <style>
+                * {{
+                    margin: 0;
+                    padding: 0;
+                    box-sizing: border-box;
+                }}
+                
+                body {{
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    min-height: 100vh;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    padding: 20px;
+                }}
+                
+                .container {{
+                    background: white;
+                    padding: 40px;
+                    border-radius: 12px;
+                    box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+                    width: 100%;
+                    max-width: 600px;
+                }}
+                
+                h2 {{
+                    color: #333;
+                    margin-bottom: 30px;
+                    text-align: center;
+                    font-size: 24px;
+                    font-weight: 600;
+                }}
+                
+                .token-section {{
+                    margin-bottom: 30px;
+                }}
+                
+                .token-label {{
+                    font-weight: 600;
+                    color: #333;
+                    margin-bottom: 8px;
+                    font-size: 14px;
+                    text-transform: uppercase;
+                    letter-spacing: 0.5px;
+                }}
+                
+                .token-container {{
+                    position: relative;
+                    background: #f8f9fa;
+                    border: 2px solid #e1e5e9;
+                    border-radius: 8px;
+                    padding: 16px;
+                    margin-bottom: 20px;
+                }}
+                
+                .token-value {{
+                    font-family: 'Courier New', monospace;
+                    font-size: 14px;
+                    color: #333;
+                    word-break: break-all;
+                    line-height: 1.5;
+                    margin: 0;
+                    padding-right: 50px;
+                }}
+                
+                .copy-btn {{
+                    position: absolute;
+                    top: 12px;
+                    right: 12px;
+                    background: #667eea;
+                    color: white;
+                    border: none;
+                    padding: 8px 12px;
+                    border-radius: 6px;
+                    font-size: 12px;
+                    cursor: pointer;
+                    transition: background-color 0.3s ease;
+                }}
+                
+                .copy-btn:hover {{
+                    background: #5a6fd8;
+                }}
+                
+                .copy-btn.copied {{
+                    background: #28a745;
+                }}
+                
+                .success-banner {{
+                    background: linear-gradient(90deg, #28a745 0%, #20c997 100%);
+                    color: white;
+                    padding: 16px;
+                    border-radius: 8px;
+                    text-align: center;
+                    margin-bottom: 30px;
+                    font-weight: 500;
+                }}
+                
+                .warning {{
+                    background: #fff3cd;
+                    border: 1px solid #ffeaa7;
+                    color: #856404;
+                    padding: 16px;
+                    border-radius: 8px;
+                    font-size: 14px;
+                    text-align: center;
+                }}
+                
+                .back-link {{
+                    display: inline-block;
+                    margin-top: 20px;
+                    color: #667eea;
+                    text-decoration: none;
+                    font-size: 14px;
+                    transition: color 0.3s ease;
+                }}
+                
+                .back-link:hover {{
+                    color: #5a6fd8;
+                    text-decoration: underline;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="success-banner">
+                    ✓ Token Generated Successfully
+                </div>
+                
+                <h2>Your API Token</h2>
+                
+                <div class="token-section">
+                    <div class="token-label">Access Token</div>
+                    <div class="token-container">
+                        <div class="token-value" id="access-token">
+                            {token}
+                        </div>
+                        <button class="copy-btn" onclick="copyToken('access-token', this)">Copy</button>
+                    </div>
+                </div>
+                
+                <div class="token-section">
+                    <div class="token-label">Token Type</div>
+                    <div class="token-container">
+                        <div class="token-value" id="token-type">
+                            bearer
+                        </div>
+                        <button class="copy-btn" onclick="copyToken('token-type', this)">Copy</button>
+                    </div>
+                </div>
+                
+                <div class="warning">
+                    ⚠️ This token expires in 24 hours. Store it securely and do not share it.
+                </div>
+                
+                <a href="login.html" class="back-link">← Generate New Token</a>
+            </div>
+            
+            <script>
+                function copyToken(elementId, button) {{
+                    const tokenElement = document.getElementById(elementId);
+                    const tokenText = tokenElement.textContent.trim();
+                    
+                    navigator.clipboard.writeText(tokenText).then(function() {{
+                        button.textContent = 'Copied!';
+                        button.classList.add('copied');
+                        
+                        setTimeout(function() {{
+                            button.textContent = 'Copy';
+                            button.classList.remove('copied');
+                        }}, 2000);
+                    }});
+                }}
+                
+                // You can populate the actual token values like this:
+                // document.getElementById('access-token').textContent = json.access_token;
+                // document.getElementById('token-type').textContent = json.token_type;
+            </script>
+        </body>
+        </html>
+    """
 
 @app.get(
     "/token-ui",
@@ -149,22 +336,149 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 )
 def token_ui():
     return """
-    <html>
-    <body>
-        <h2>Login to generate token</h2>
-        <form action="login" method="post">
-            <input name="username" type="email" placeholder="Email" required>
-            <input name="password" type="password" placeholder="Password" required>
-            <button type="submit">Get Token</button>
-        </form>
-        <text>The token is only valid for 1 day. You must regenerate in order to access.</text>
-        <text>If you have problems loggin in, please contact:</text>
-        <ul style="">
-            <li>goncalo.ferreira@student.uva.nl</ul>
-            <li>a.tahir2@uva.nl</ul>
-        </ul>
-    </body>
-    </html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>API Token Generator</title>
+            <style>
+                * {
+                    margin: 0;
+                    padding: 0;
+                    box-sizing: border-box;
+                }
+                
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    min-height: 100vh;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    padding: 20px;
+                }
+                
+                .container {
+                    background: white;
+                    padding: 40px;
+                    border-radius: 12px;
+                    box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+                    width: 100%;
+                    max-width: 400px;
+                }
+                
+                h2 {
+                    color: #333;
+                    margin-bottom: 30px;
+                    text-align: center;
+                    font-size: 24px;
+                    font-weight: 600;
+                }
+                
+                form {
+                    margin-bottom: 30px;
+                }
+                
+                input {
+                    width: 100%;
+                    padding: 12px 16px;
+                    margin-bottom: 16px;
+                    border: 2px solid #e1e5e9;
+                    border-radius: 8px;
+                    font-size: 16px;
+                    transition: border-color 0.3s ease;
+                }
+                
+                input:focus {
+                    outline: none;
+                    border-color: #667eea;
+                }
+                
+                button {
+                    width: 100%;
+                    padding: 14px;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
+                    font-size: 16px;
+                    font-weight: 600;
+                    cursor: pointer;
+                    transition: transform 0.2s ease;
+                }
+                
+                button:hover {
+                    transform: translateY(-2px);
+                }
+                
+                .info {
+                    background: #f8f9fa;
+                    padding: 20px;
+                    border-radius: 8px;
+                    border-left: 4px solid #ffc107;
+                    margin-bottom: 20px;
+                }
+                
+                .info p {
+                    color: #666;
+                    font-size: 14px;
+                    line-height: 1.5;
+                    margin-bottom: 0;
+                }
+                
+                .contact {
+                    background: #f8f9fa;
+                    padding: 20px;
+                    border-radius: 8px;
+                    border-left: 4px solid #17a2b8;
+                }
+                
+                .contact p {
+                    color: #666;
+                    font-size: 14px;
+                    margin-bottom: 10px;
+                }
+                
+                .contact ul {
+                    list-style: none;
+                    margin: 0;
+                }
+                
+                .contact li {
+                    color: #667eea;
+                    font-size: 14px;
+                    margin-bottom: 5px;
+                }
+                
+                .contact li:last-child {
+                    margin-bottom: 0;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>GreenDIGIT WP6 CIM API Token</h1>
+                <h2>Login to generate token</h2>
+                <form action="login" method="post">
+                    <input name="username" type="email" placeholder="Email" required>
+                    <input name="password" type="password" placeholder="Password" required>
+                    <button type="submit">Get Token</button>
+                </form>
+                
+                <div class="info">
+                    <p>The token is only valid for 1 day. You must regenerate in order to access.</p>
+                </div>
+                
+                <div class="contact">
+                    <p>If you have problems logging in, please contact:</p>
+                    <ul>
+                        <li>goncalo.ferreira@student.uva.nl</li>
+                        <li>a.tahir2@uva.nl</li>
+                    </ul>
+                </div>
+            </div>
+        </body>
+        </html>
     """
 
 @app.post(
