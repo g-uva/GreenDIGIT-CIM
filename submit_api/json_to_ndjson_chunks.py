@@ -3,14 +3,12 @@ import gzip
 import hashlib
 import io
 import json
-import os
 import sys
 import uuid
-import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator, Dict, Any, Optional
+from typing import Iterator, Dict, Any
 
 DEFAULT_CHUNK = 10_000
 

@@ -9,3 +9,5 @@ pyvenv.cfg
 metrics_data
 users.db
 pg_data/
+out_chunks/
+input.json

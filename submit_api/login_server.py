@@ -9,7 +9,7 @@ from typing import Optional
 import time
 import os, json, zlib
 from dotenv import load_dotenv
-from metrics_store import store_metric, _col
+from metrics_store import store_metric, _col, _db, store_metrics_bulk
 from sqlalchemy import create_engine, Column, String, Integer
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from pymongo import InsertOne
@@ -621,49 +621,52 @@ async def submit_ndjson(request: Request, publisher_email: str = Depends(verify_
 
     return {"ok": True, "inserted": inserted}
 
-@app.post("/submit/batch", tags=["Metrics"])
+@app.post("/submit/batch", tags=["Metrics"], summary="Bulk insert (JSON array) with idempotency")
 async def submit_batch(
     request: Request,
-    body = Body(...),
+    body = Body(...),  # must be a JSON array
     publisher_email: str = Depends(verify_token),
 ):
+    # Idempotency headers
     idem = request.headers.get("Idempotency-Key")
     seq  = request.headers.get("X-Batch-Seq")
-
     if not idem or seq is None:
-        raise HTTPException(status_code=400, detail="Missing Idempotency-Key or X-Batch-Seq headers")
+        raise HTTPException(status_code=400, detail="Missing Idempotency-Key or X-Batch-Seq")
 
     try:
         seq = int(seq)
     except ValueError:
         raise HTTPException(status_code=400, detail="X-Batch-Seq must be an integer")
 
-    # 1) Try to record this segment as "in progress"
+    if not isinstance(body, list):
+        raise HTTPException(status_code=422, detail="Body must be a JSON array of objects")
+
+    # 1) try to register this (publisher,idempotency_key,seq)
+    sess = _db["ingest_sessions"]
     try:
-        _s = _db["ingest_sessions"]
-        _s.insert_one({
+        sess.insert_one({
             "publisher_email": publisher_email,
             "idempotency_key": idem,
             "seq": seq,
             "status": "in_progress",
         })
     except Exception as e:
-        # Duplicate key => this exact (pub, batch, seq) was already processed
+        # duplicate => already processed this exact segment
         if "E11000" in str(e):
             return {"ok": True, "inserted": 0, "duplicate": True, "next_expected_seq": seq + 1}
         raise
 
-    # 2) Do the bulk insert
-    from metrics_store import store_metrics_bulk
-    result = store_metrics_bulk(publisher_email, body)
+    # 2) bulk insert
+    r = store_metrics_bulk(publisher_email, body)
 
-    # 3) Mark segment done (or remove on failure)
-    if result.get("ok"):
-        _s.update_one(
+    # 3) finalise
+    if r.get("ok"):
+        sess.update_one(
             {"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq},
-            {"$set": {"status": "done", "inserted": result["inserted"]}}
+            {"$set": {"status": "done", "inserted": r["inserted"]}}
         )
-        return {"ok": True, "inserted": result["inserted"], "next_expected_seq": seq + 1}
+        return {"ok": True, "inserted": r["inserted"], "next_expected_seq": seq + 1}
     else:
-        _s.delete_one({"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq})
-        raise HTTPException(status_code=500, detail=result.get("error", "bulk insert failed"))
+        # roll back the session marker so you can retry
+        sess.delete_one({"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq})
+        raise HTTPException(status_code=500, detail=r.get("error", "bulk insert failed"))
