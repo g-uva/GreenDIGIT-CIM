@@ -571,7 +571,48 @@ def reset_password(
     db.commit()
     return {"msg": "Password updated successfully"}
 
-@app.post("/submit/ndjson", tags=["Metrics"], summary="Stream NDJSON (optionally gzip)")
+@app.post(
+    "/submit/ndjson",
+    tags=["Metrics"], 
+    summary="Stream NDJSON (optionally gzip) with safe bulk flush",
+    description=(
+        "Ingests newline-delimited JSON (NDJSON) via streaming. You may gzip the body.\n\n"
+        "Headers:\n"
+        "- **Authorization**: `Bearer <token>` (required)\n"
+        "- **Content-Type**: `application/x-ndjson` (required)\n"
+        "- **Content-Encoding**: `gzip` (optional)\n"
+        "- **Idempotency-Key**: UUID for this POST (optional but recommended for retries)\n"
+        "- **X-Batch-Seq**: integer sequence for this POST within a larger upload (optional)\n\n"
+        "Safeguards:\n"
+        "- Server performs **bulk writes** (size controlled by `BULK_MAX_OPS`) to avoid RAM spikes.\n"
+        "- Writes use **w=majority, j=true** for durability on Mongo.\n"
+        "- If `Idempotency-Key`+`X-Batch-Seq` are provided, the server deduplicates this POST using a unique key in `ingest_sessions`.\n\n"
+        "Examples:\n\n"
+        "```bash\n"
+        "# Plain NDJSON\n"
+        "curl -X POST $URL/gd-cim-api/submit/ndjson \\\n"
+        "  -H \"Authorization: Bearer $TOKEN\" \\\n"
+        "  -H \"Content-Type: application/x-ndjson\" \\\n"
+        "  --data-binary @file.ndjson\n"
+        "```\n\n"
+        "```bash\n"
+        "# Gzipped NDJSON + idempotency headers\n"
+        "gzip -c file.ndjson | curl -X POST $URL/gd-cim-api/submit/ndjson \\\n"
+        "  -H \"Authorization: Bearer $TOKEN\" \\\n"
+        "  -H \"Content-Type: application/x-ndjson\" \\\n"
+        "  -H \"Content-Encoding: gzip\" \\\n"
+        "  -H \"Idempotency-Key: $IDEM\" \\\n"
+        "  -H \"X-Batch-Seq: 0\" \\\n"
+        "  --data-binary @-\n"
+        "```\n"
+    ),
+    responses={
+        200: {"description": "OK; returns count of inserted lines"},
+        400: {"description": "Bad headers or body"},
+        401: {"description": "Missing/invalid Bearer token"},
+        500: {"description": "Database error"},
+    },
+)
 async def submit_ndjson(request: Request, publisher_email: str = Depends(verify_token)):
     # Gzip support
     content_encoding = (request.headers.get("Content-Encoding") or "").lower()
@@ -621,7 +662,50 @@ async def submit_ndjson(request: Request, publisher_email: str = Depends(verify_
 
     return {"ok": True, "inserted": inserted}
 
-@app.post("/submit/batch", tags=["Metrics"], summary="Bulk insert (JSON array) with idempotency")
+@app.post(
+    "/submit/batch",
+    summary="Bulk insert (JSON array) with idempotency",
+    description=(
+        "Accepts a **JSON array** of metric objects and performs a single Mongo bulk write.\n\n"
+        "Headers:\n"
+        "- **Authorization**: `Bearer <token>` (required)\n"
+        "- **Content-Type**: `application/json` (required)\n"
+        "- **Idempotency-Key**: UUID for the **array batch** (required)\n"
+        "- **X-Batch-Seq**: integer sequence for this batch (required)\n\n"
+        "Safeguards:\n"
+        "- Writes use **w=majority, j=true** for durability.\n"
+        "- Unique key on `(publisher_email, idempotency_key, seq)` prevents duplicates; safe to retry the same request.\n\n"
+        "Request example:\n"
+        "```http\n"
+        "POST /gd-cim-api/submit/batch\n"
+        "Authorization: Bearer <jwt>\n"
+        "Content-Type: application/json\n"
+        "Idempotency-Key: 11111111-1111-1111-1111-111111111111\n"
+        "X-Batch-Seq: 0\n"
+        "\n"
+        "[\n"
+        "  {\"metric\":\"cpu.util\",\"value\":0.73,\"ts\":\"2025-09-01T10:02:03Z\",\"node\":\"compute-0\"},\n"
+        "  {\"metric\":\"mem.used\",\"value\":2154,\"ts\":\"2025-09-01T10:02:04Z\",\"node\":\"compute-0\"}\n"
+        "]\n"
+        "```\n"
+        "Shell example:\n"
+        "```bash\n"
+        "curl -X POST $URL/gd-cim-api/submit/batch \\\n"
+        "  -H \"Authorization: Bearer $TOKEN\" \\\n"
+        "  -H \"Content-Type: application/json\" \\\n"
+        "  -H \"Idempotency-Key: $IDEM\" \\\n"
+        "  -H \"X-Batch-Seq: 0\" \\\n"
+        "  --data-binary @input.json\n"
+        "```\n"
+    ),
+    responses={
+        200: {"description": "OK; returns number inserted and next seq"},
+        400: {"description": "Missing/invalid headers"},
+        401: {"description": "Missing/invalid Bearer token"},
+        422: {"description": "Body was not a JSON array"},
+        500: {"description": "Database error"},
+    },
+)
 async def submit_batch(
     request: Request,
     body = Body(...),  # must be a JSON array

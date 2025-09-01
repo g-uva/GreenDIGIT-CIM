@@ -9,7 +9,7 @@ gzip -c big_example_REPLACE.ndjson | curl -X POST \
 
 ### A. Bring services up
 # 1) Set env
-export JWT_TOKEN='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJnb25jYWxvLmZlcnJlaXJhQHN0dWRlbnQudXZhLm5sIiwiaXNzIjoiZ3JlZW5kaWdpdC1sb2dpbi11dmEiLCJpYXQiOjE3NTY3MzA2MDcsIm5iZiI6MTc1NjczMDYwNywiZXhwIjoxNzU2ODE3MDA3fQ.Mk9V1u_yt2AeXi-XVXd7VKQ-KRBQKRABgnihw3enGCU'
+export JWT_TOKEN='<your_token>'
 export MONGO_URI='mongodb://localhost:27017/'
 
 # 2) Start Mongo (your docker-compose or local mongod)
@@ -67,11 +67,20 @@ gzip -c tiny.ndjson | curl -s -X POST http://localhost:8000/gd-cim-api/submit/nd
   -H "Content-Encoding: gzip" \
   --data-binary @-
 
-### F. Test with chunks
-python submit_api/json_to_ndjson_chunks.py input.json out_chunks --chunk-size 10000 --gzip
+### F. Submit chunks
+# Gen chunks
+python submit_api/gen_input.py # it will create a out_chunks folder with a manifest and .gz chunks.
 
 python submit_api/json_to_ndjson_chunks.py input.json out_chunks \
   --gzip --exec-curl \
   --endpoint http://localhost:8000/gd-cim-api/submit/ndjson \
   --bearer "$TOKEN"
+
+### G. Test with batch
+curl -sS -X POST "$URL/gd-cim-api/submit/batch" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "X-Batch-Seq: 0" \
+  --data-binary @input.json
 
