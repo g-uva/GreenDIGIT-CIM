@@ -125,6 +125,36 @@ We use [FastAPI](https://fastapi.tiangolo.com/)—a simple Python RESTful API se
 - Endpoints will be reverse-proxied via Nginx in production.
 - Docker support is available for easy deployment.
 
+### JSON to NDJSON Chunks Helper
+Basic conversion (auto-detects input format, writes chunks + manifest):
+```sh
+python json_to_ndjson_chunks.py input.json out_dir
+```
+
+Main options:
+- `--chunk-size 10000` (default is 10k)
+- `--gzip` to write `.ndjson.gz`
+- `--input-format array|ndjson|auto` (default `auto`)
+- `--idem-key <uuid>` (otherwise generated)
+- `--prefix chunk` (file prefix, default `chunk`)
+- `--start-seq 0` (first `X-Batch-Seq`)
+
+Generate curl commands (but don’t run them):
+```sh
+python json_to_ndjson_chunks.py input.json out_dir \
+  --emit-curl \
+  --endpoint https://mc-a4.lab.uvalight.net/gd-cim-api/submit/ndjson \
+  --bearer "$TOKEN"
+```
+
+Execute uploads (requires `curl` installed):
+```sh
+python json_to_ndjson_chunks.py input.json out_dir \
+  --exec-curl \
+  --endpoint https://mc-a4.lab.uvalight.net/gd-cim-api/submit/ndjson \
+  --bearer "$TOKEN"
+```
+
 ### Integration & Next Steps
 - [x] Separate DB from API, because I am guessing that if we rebuild using Docker, this will reset the DB @goncalo.
 - [ ] Step by step tutorial for: (1) run uvicorn locally, (2) running Dockerfile (server context), showing the endpoints (UI, OpenAPI, and others)
@@ -137,3 +167,4 @@ We use [FastAPI](https://fastapi.tiangolo.com/)—a simple Python RESTful API se
 For questions or to request access, please contact the UvA CIM team:
 - Adnan Tahir: a.tahir2@uva.nl.
 - Gonçalo Ferreira: goncalo.ferreira@student.uva.nl.
+

@@ -7,11 +7,16 @@ from passlib.context import CryptContext
 from jose import JWTError, jwt
 from typing import Optional
 import time
-import os
+import os, json, zlib
 from dotenv import load_dotenv
 from metrics_store import store_metric, _col
 from sqlalchemy import create_engine, Column, String, Integer
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
+from pymongo import InsertOne
+from pymongo.write_concern import WriteConcern
+from datetime import datetime, timezone
+
+
 
 load_dotenv()  # loads from .env in the current folder by default
 
@@ -49,6 +54,7 @@ if not SECRET_KEY:
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_SECONDS = 86400 # 1 day
 JWT_ISSUER = os.environ.get("JWT_ISSUER", "greendigit-login-uva")
+BULK_MAX_OPS = int(os.getenv("BULK_MAX_OPS", "1000"))
 
 # SQLite setup
 SQLALCHEMY_DATABASE_URL = "sqlite:///./users.db"
@@ -564,3 +570,100 @@ def reset_password(
     user.hashed_password = pwd_context.hash(data.new_password)
     db.commit()
     return {"msg": "Password updated successfully"}
+
+@app.post("/submit/ndjson", tags=["Metrics"], summary="Stream NDJSON (optionally gzip)")
+async def submit_ndjson(request: Request, publisher_email: str = Depends(verify_token)):
+    # Gzip support
+    content_encoding = (request.headers.get("Content-Encoding") or "").lower()
+    decoder = zlib.decompressobj(16 + zlib.MAX_WBITS) if content_encoding == "gzip" else None
+
+    # Majority+journal write concern for integrity (tune later if needed)
+    col = _db.get_collection(_col.name, write_concern=WriteConcern(w="majority", j=True))
+
+    buf = b""
+    ops, inserted = [], 0
+
+    async for chunk in request.stream():
+        if decoder:
+            chunk = decoder.decompress(chunk)
+        buf += chunk
+        *lines, buf = buf.split(b"\n")
+        for line in lines:
+            if not line.strip():
+                continue
+            body = json.loads(line)
+            ops.append(InsertOne({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "publisher_email": publisher_email,
+                "body": body
+            }))
+            if len(ops) >= BULK_MAX_OPS:
+                col.bulk_write(ops, ordered=False, bypass_document_validation=True)
+                inserted += len(ops)
+                ops = []
+
+    # flush decoder tail & last line(s)
+    if decoder:
+        tail = decoder.flush()
+        if tail:
+            buf += tail
+    for line in filter(None, buf.split(b"\n")):
+        if line.strip():
+            body = json.loads(line)
+            ops.append(InsertOne({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "publisher_email": publisher_email,
+                "body": body
+            }))
+    if ops:
+        col.bulk_write(ops, ordered=False, bypass_document_validation=True)
+        inserted += len(ops)
+
+    return {"ok": True, "inserted": inserted}
+
+@app.post("/submit/batch", tags=["Metrics"])
+async def submit_batch(
+    request: Request,
+    body = Body(...),
+    publisher_email: str = Depends(verify_token),
+):
+    idem = request.headers.get("Idempotency-Key")
+    seq  = request.headers.get("X-Batch-Seq")
+
+    if not idem or seq is None:
+        raise HTTPException(status_code=400, detail="Missing Idempotency-Key or X-Batch-Seq headers")
+
+    try:
+        seq = int(seq)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="X-Batch-Seq must be an integer")
+
+    # 1) Try to record this segment as "in progress"
+    try:
+        _s = _db["ingest_sessions"]
+        _s.insert_one({
+            "publisher_email": publisher_email,
+            "idempotency_key": idem,
+            "seq": seq,
+            "status": "in_progress",
+        })
+    except Exception as e:
+        # Duplicate key => this exact (pub, batch, seq) was already processed
+        if "E11000" in str(e):
+            return {"ok": True, "inserted": 0, "duplicate": True, "next_expected_seq": seq + 1}
+        raise
+
+    # 2) Do the bulk insert
+    from metrics_store import store_metrics_bulk
+    result = store_metrics_bulk(publisher_email, body)
+
+    # 3) Mark segment done (or remove on failure)
+    if result.get("ok"):
+        _s.update_one(
+            {"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq},
+            {"$set": {"status": "done", "inserted": result["inserted"]}}
+        )
+        return {"ok": True, "inserted": result["inserted"], "next_expected_seq": seq + 1}
+    else:
+        _s.delete_one({"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq})
+        raise HTTPException(status_code=500, detail=result.get("error", "bulk insert failed"))
