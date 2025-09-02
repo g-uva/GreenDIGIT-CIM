@@ -17,7 +17,15 @@ from pymongo.errors import PyMongoError
 from pymongo.write_concern import WriteConcern
 from datetime import datetime, timezone
 
-
+try:
+    _db["ingest_sessions"].create_index(
+        [("publisher_email", 1), ("idempotency_key", 1), ("seq", 1)],
+        unique=True,
+        name="idem_publisher_key_seq_unique"
+    )
+except Exception as _:
+    # Non-fatal: index might already exist or Mongo not ready at import time
+    pass
 
 load_dotenv()  # loads from .env in the current folder by default
 
@@ -574,129 +582,125 @@ def reset_password(
 
 @app.post(
     "/submit/ndjson",
-    tags=["Metrics"], 
+    tags=["Metrics"],
     summary="Stream NDJSON (optionally gzip) with safe bulk flush",
-    description=(
-        "Ingests newline-delimited JSON (NDJSON) via streaming. You may gzip the body.\n\n"
-        "Headers:\n"
-        "- **Authorization**: `Bearer <token>` (required)\n"
-        "- **Content-Type**: `application/x-ndjson` (required)\n"
-        "- **Content-Encoding**: `gzip` (optional)\n"
-        "- **Idempotency-Key**: UUID for this POST (optional but recommended for retries)\n"
-        "- **X-Batch-Seq**: integer sequence for this POST within a larger upload (optional)\n\n"
-        "Safeguards:\n"
-        "- Server performs **bulk writes** (size controlled by `BULK_MAX_OPS`) to avoid RAM spikes.\n"
-        "- Writes use **w=majority, j=true** for durability on Mongo.\n"
-        "- If `Idempotency-Key`+`X-Batch-Seq` are provided, the server deduplicates this POST using a unique key in `ingest_sessions`.\n\n"
-        "Examples:\n\n"
-        "```bash\n"
-        "# Plain NDJSON\n"
-        "curl -X POST $URL/gd-cim-api/submit/ndjson \\\n"
-        "  -H \"Authorization: Bearer $TOKEN\" \\\n"
-        "  -H \"Content-Type: application/x-ndjson\" \\\n"
-        "  --data-binary @file.ndjson\n"
-        "```\n\n"
-        "```bash\n"
-        "# Gzipped NDJSON + idempotency headers\n"
-        "gzip -c file.ndjson | curl -X POST $URL/gd-cim-api/submit/ndjson \\\n"
-        "  -H \"Authorization: Bearer $TOKEN\" \\\n"
-        "  -H \"Content-Type: application/x-ndjson\" \\\n"
-        "  -H \"Content-Encoding: gzip\" \\\n"
-        "  -H \"Idempotency-Key: $IDEM\" \\\n"
-        "  -H \"X-Batch-Seq: 0\" \\\n"
-        "  --data-binary @-\n"
-        "```\n"
-    ),
+    description="Ingests newline-delimited JSON via streaming; supports gzip; idempotent with Idempotency-Key + X-Batch-Seq.",
     responses={
         200: {"description": "OK; returns count of inserted lines"},
-        400: {"description": "Bad headers or body"},
+        400: {"description": "Bad headers or body (content-type, JSON, UTF-8, gzip)"},
         401: {"description": "Missing/invalid Bearer token"},
-        500: {"description": "Database error"},
+        500: {"description": "Server/database error (rolled back for safe retry)"},
     },
 )
-
-@app.post("/submit/ndjson", tags=["Metrics"], summary="Stream NDJSON (optionally gzip) with safe bulk flush")
 async def submit_ndjson(request: Request, publisher_email: str = Depends(verify_token)):
+    # Basic header checks (helpful when tools mis-set content-type)
+    ctype = (request.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    if ctype != "application/x-ndjson":
+        raise HTTPException(status_code=400, detail=f"Content-Type must be application/x-ndjson, got {ctype or '<missing>'}")
+
     content_encoding = (request.headers.get("Content-Encoding") or "").lower()
-    decoder = zlib.decompressobj(16 + zlib.MAX_WBITS) if content_encoding == "gzip" else None
+    try:
+        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS) if content_encoding == "gzip" else None
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid gzip stream: {e}")
 
     # ---- Idempotency (only if both headers present) ----
     idem = request.headers.get("Idempotency-Key")
     seq_hdr = request.headers.get("X-Batch-Seq")
-    seq_int = None
-    sess = None
+    seq_int, sess = None, None
     if idem is not None and seq_hdr is not None:
         try:
             seq_int = int(seq_hdr)
         except ValueError:
             raise HTTPException(status_code=400, detail="X-Batch-Seq must be an integer")
+
         sess = _db["ingest_sessions"]
-        if sess:
-            try:
-                sess.insert_one({
-                    "publisher_email": publisher_email,
-                    "idempotency_key": idem,
-                    "seq": seq_int,
-                    "status": "in_progress",
-                })
-            except Exception as e:
-                # Duplicate => this (publisher, key, seq) already processed
-                if "E11000" in str(e):
-                    return {"ok": True, "inserted": 0, "duplicate": True, "next_expected_seq": seq + 1}
-                raise
+        try:
+            sess.insert_one({
+                "publisher_email": publisher_email,
+                "idempotency_key": idem,
+                "seq": seq_int,
+                "status": "in_progress",
+                "ts": datetime.now(timezone.utc).isoformat()
+            })
+        except Exception as e:
+            # Duplicate (requires the unique index from step 1)
+            if "E11000" in str(e):
+                return {"ok": True, "inserted": 0, "duplicate": True, "next_expected_seq": seq_int + 1}
+            # Any other insert error => 500 with context
+            raise HTTPException(status_code=500, detail=f"Failed to register idempotency key: {e}")
 
     # ---- Streaming ingest with bulk flush ----
     col = _db.get_collection(_col.name, write_concern=WriteConcern(w="majority", j=True))
     buf = b""
-    ops, inserted = [], 0
+    ops, inserted, line_no = [], 0, 0
 
-    async for chunk in request.stream():
-        if decoder:
-            chunk = decoder.decompress(chunk)
-        buf += chunk
-        *lines, buf = buf.split(b"\n")
-        for line in lines:
-            if not line.strip():
-                continue
-            body = json.loads(line)
-            ops.append(InsertOne({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "publisher_email": publisher_email,
-                "body": body
-            }))
-            if len(ops) >= BULK_MAX_OPS:
-                col.bulk_write(ops, ordered=False, bypass_document_validation=True)
-                inserted += len(ops)
-                ops = []
+    def _append_line(line_bytes: bytes):
+        nonlocal ops, inserted, line_no
+        line_no += 1
+        if not line_bytes.strip():
+            return
+        try:
+            body = json.loads(line_bytes)
+        except UnicodeDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid UTF-8 at line {line_no}: {e}")
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON at line {line_no}: {e.msg}")
+        ops.append(InsertOne({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "publisher_email": publisher_email,
+            "body": body
+        }))
+        if len(ops) >= BULK_MAX_OPS:
+            col.bulk_write(ops, ordered=False, bypass_document_validation=True)
+            inserted += len(ops)
+            ops = []
 
-    if decoder:
-        tail = decoder.flush()
-        if tail:
-            buf += tail
-    for line in filter(None, buf.split(b"\n")):
-        if line.strip():
-            body = json.loads(line)
-            ops.append(InsertOne({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "publisher_email": publisher_email,
-                "body": body
-            }))
     try:
+        async for chunk in request.stream():
+            if decoder:
+                chunk = decoder.decompress(chunk)
+            buf += chunk
+            *lines, buf = buf.split(b"\n")
+            for line in lines:
+                _append_line(line)
+
+        # flush any gzip tail and process the remainder
+        if decoder:
+            tail = decoder.flush()
+            if tail:
+                buf += tail
+        if buf:
+            for line in filter(None, buf.split(b"\n")):
+                _append_line(line)
+
         if ops:
             col.bulk_write(ops, ordered=False, bypass_document_validation=True)
             inserted += len(ops)
+
     except PyMongoError as e:
+        # rollback idempotency marker so client can retry
         if sess and seq_int is not None:
             sess.delete_one({"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq_int})
-        raise HTTPException(status_code=500, detail=f"Mongo bulk_write error: {e}")
+        raise HTTPException(status_code=500, detail=f"Mongo bulk_write error after {inserted} inserts (line {line_no}): {e}")
+    except HTTPException:
+        # re-raise structured 4xx errors from parsing
+        if sess and seq_int is not None:
+            sess.delete_one({"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq_int})
+        raise
+    except Exception as e:
+        # catch-all: always return JSON (not a blank 500)
+        if sess and seq_int is not None:
+            sess.delete_one({"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq_int})
+        raise HTTPException(status_code=500, detail=f"Unhandled error at line {line_no}: {type(e).__name__}: {e}")
 
     # ---- Finalise idempotency session ----
-    if sess:
+    if sess and seq_int is not None:
         sess.update_one(
-            {"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq},
-            {"$set": {"status": "done", "inserted": inserted}}
+            {"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq_int},
+            {"$set": {"status": "done", "inserted": inserted, "ts_done": datetime.now(timezone.utc).isoformat()}}
         )
-        return {"ok": True, "inserted": inserted, "next_expected_seq": seq + 1}
+        return {"ok": True, "inserted": inserted, "next_expected_seq": seq_int + 1}
 
     return {"ok": True, "inserted": inserted}
 

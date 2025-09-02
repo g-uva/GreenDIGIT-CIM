@@ -219,37 +219,36 @@ python submit_api/chunk_service/json_to_ndjson_chunks.py submit_api/chunk_servic
 ```
 
 ```sh
-mongosh 
+# This will retrieve the the metrics by email:
+docker exec -it submit_api-metrics-db-1 mongosh
+
+# Get metrics per email
 use metricsdb
-db.ingest_sessions.find({
-  publisher_email: "goncalo.ferreira@student.uva.nl",
-  idempotency_key: "57f8c2cd-d9ae-4d90-bd87-4cdcb0624a35"
-})
+db.ingest_sessions.find({ publisher_email: "goncalo.ferreira@student.uva.nl", idempotency_key: "57f8c2cd-d9ae-4d90-bd87-4cdcb0624a35" })
 
+use metricsdb
+# Count
+db.metrics.countDocuments({ publisher_email: "goncalo.ferreira@student.uva.nl" })
+# Show just the "body" field (the actual metric)
+db.metrics.find({ publisher_email: "goncalo.ferreira@student.uva.nl" }, { _id: 0, body: 1 }).limit(10).pretty()
+
+# For the user to retrieve their metrics using the endpoint
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  https://mc-a4.lab.uvalight.net/gd-cim-api/metrics/me | jq .
+
+# Just the metrics' payload:
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  https://mc-a4.lab.uvalight.net/gd-cim-api/metrics/me | jq '.[].body'
+```
+
+```sh
+# This is the command used to start/resume the submission of chunks.
 python -u submit_api/chunk_service/json_to_ndjson_chunks.py submit_api/chunk_service/test_data/input.json submit_api/chunk_service/test_data/out_dir \
   --idem-key "$IDEM" --exec-curl --auto-resume --verbose \
   --status-endpoint https://mc-a4.lab.uvalight.net/gd-cim-api/ingest/status \
   --endpoint        https://mc-a4.lab.uvalight.net/gd-cim-api/submit/ndjson \
   --bearer "$TOKEN"
 
-# first run
-python -u submit_api/chunk_service/json_to_ndjson_chunks.py submit_api/chunk_service/test_data/input.json submit_api/chunk_service/test_data/out_dir \
-  --idem-key "$IDEM" --exec-curl --verbose \
-  --endpoint https://mc-a4.lab.uvalight.net/gd-cim-api/submit/ndjson \
-  --bearer "$TOKEN"
-
-# if interrupted, just run the same command again
-# it will print [resume-local] ... and start from the next seq
-python -u submit_api/chunk_service/json_to_ndjson_chunks.py submit_api/chunk_service/test_data/input.json submit_api/chunk_service/test_data/out_dir \
-  --idem-key "$IDEM" --exec-curl --verbose \
-  --endpoint https://mc-a4.lab.uvalight.net/gd-cim-api/submit/ndjson \
-  --bearer "$TOKEN"
-
-python -u submit_api/chunk_service/json_to_ndjson_chunks.py submit_api/chunk_service/test_data/input.json submit_api/chunk_service/test_data/out_dir \
-  --idem-key "$IDEM" --exec-curl --auto-resume --verbose \
-  --status-endpoint https://mc-a4.lab.uvalight.net/gd-cim-api/ingest/status \
-  --endpoint        https://mc-a4.lab.uvalight.net/gd-cim-api/submit/ndjson \
-  --bearer "$TOKEN"
 ```
 
 ### Batch/chunk tests (for dev, not end-user!)
