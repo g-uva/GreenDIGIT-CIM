@@ -65,6 +65,17 @@ _python cloud_metrics_api/unified_ingestion.py --file path/to/file.json --datace
 
 This service provides a secure API for collecting and aggregating CIM metrics from authorised partners. Authentication is managed via a list of allowed emails and token-based access. The service is built with FastAPI and runs on a Uvicorn server, designed for easy integration and future extensibility.
 
+### Data Storage
+
+- **Metrics Storage:**  
+  Submitted metrics will be transformed and stored in a SQL-compatible format (PostgreSQL) and organised into appropriate namespaces for future querying and analysis.
+
+### Deployment
+
+- The service runs on a Uvicorn server (default port: `8080`).
+- Endpoints will be reverse-proxied via Nginx in production.
+- Docker support is available for easy deployment.
+
 ### Usage
 #### Authentication
 - Obtain a token via **POST /login** using form fields `email` and `password`. Your email must be registered beforehand, **and the password will be set on the first time you enter it**. In case this does not work (wrong password/unknown), please contact goncalo.ferreira@student.uva.nl or a.tahir2@uva.nl.
@@ -102,7 +113,7 @@ To check the FastAPI documentation, please visit: [mc-a4.lab.uvalight.net/gd-cim
   After successful login, users receive a JWT token. This token must be included as a Bearer token in the Authorisation header for all subsequent API requests.
 
 ### API Endpoints
-We use [FastAPI](https://fastapi.tiangolo.com/)—a simple Python RESTful API server, that follows the OpenAPI standards. Therefore, it also serves all teh specifications as you would expect from any OpenAPI server (e.g., if you access `/docs` or `/redocs` you should see all HTTP Request methods).
+We use [FastAPI](https://fastapi.tiangolo.com/)—a simple Python RESTful API server, that follows the OpenAPI standards. Therefore, it also serves all the specifications as you would expect from any OpenAPI server (e.g., if you access `/docs` or `/redocs` you should see all HTTP Request methods).
 
 - **`POST /login`**  
   Accepts email and password (form data). On first login, sets the password; on subsequent logins, authenticates the user and returns a JWT token.
@@ -110,22 +121,64 @@ We use [FastAPI](https://fastapi.tiangolo.com/)—a simple Python RESTful API se
 - **`GET /token-ui`**  
   A simple HTML form for manual login and token retrieval.
 
-- **`GET /submit`**  
-  Accepts a JSON payload containing metrics. Requires a valid Bearer token in the Authorisation header. The submitted metrics are validated and processed.
+---
 
+**Submission API**
 
-### Data Storage
+- **`POST /submit`**  
+  Accepts a single JSON object containing metrics. Requires a valid Bearer token in the `Authorization` header. The submitted metrics are validated and stored.
+```bash
+curl -X POST $URL/gd-cim-api/submit \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"metric":"cpu.util","value":0.73,"ts":"2025-09-01T10:02:03Z","node":"compute-0"}'
+```
 
-- **Metrics Storage:**  
-  Submitted metrics will be transformed and stored in a SQL-compatible format (PostgreSQL) and organised into appropriate namespaces for future querying and analysis.
+- **`POST /submit/batch`**  
+  Accepts a JSON **array** of metric objects and writes them in bulk. Requires `Idempotency-Key` and `Batch-Seq` headers to allow safe retries without duplicate inserts.
+```bash
+curl -X POST $URL/gd-cim-api/submit/batch \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Batch-Seq: 0" \
+  --data-binary @input.json
 
-### Deployment
+```
 
-- The service runs on a Uvicorn server (default port: `8080`).
-- Endpoints will be reverse-proxied via Nginx in production.
-- Docker support is available for easy deployment.
+- **`POST /submit/ndjson`**  
+  Accepts newline-delimited JSON (**NDJSON**) via streaming, optionally compressed with `gzip`. This is the recommended endpoint for large-scale ingestion. Supports optional `Idempotency-Key` and `Batch-Seq` headers for idempotent, resumable uploads.
+
+Example (plain NDJSON):
+```bash
+curl -X POST $URL/gd-cim-api/submit/batch \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Batch-Seq: 0" \
+  --data-binary @input.json
+```
+
+Example (gzipped NDJSON + Idempotency):
+```bash
+curl -X POST $URL/gd-cim-api/submit/batch \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Batch-Seq: 0" \
+  --data-binary @input.json
+```
+
+---
+
+**Payload size limits (important)**  
+- MongoDB restricts a **single document to 16 MB**.  
+- HTTP itself has no fixed size limit, but most servers and proxies enforce practical limits (often **1–100 MB per request**).  
+- For **large datasets (hundreds of MBs to GBs)**, always split into chunks (NDJSON streaming or JSON array batches).  
 
 ### JSON to NDJSON Chunks Helper
+In order to help convert your JSON into digestable chunks, we've developed a helper that you can use to split your JSON file `submit_api/chunk_service/*.py`.
+
 Basic conversion (auto-detects input format, writes chunks + manifest):
 ```sh
 python submit_api/chunk_service/json_to_ndjson_chunks.py input.json submit_api/chunk_service/test_data/out_dir
@@ -141,7 +194,7 @@ Main options:
 
 Generate curl commands (but don’t run them):
 ```sh
-python submit_api/chunk_service/json_to_ndjson_chunks.py input.json submit_api/chunk_service/test_data/out_dir \
+python submit_api/chunk_service/json_to_ndjson_chunks.py submit_api/chunk_service/test_data/input.json submit_api/chunk_service/test_data/out_dir \
   --emit-curl \
   --endpoint https://mc-a4.lab.uvalight.net/gd-cim-api/submit/ndjson \
   --bearer "$TOKEN"
@@ -149,7 +202,7 @@ python submit_api/chunk_service/json_to_ndjson_chunks.py input.json submit_api/c
 
 Execute uploads (requires `curl` installed):
 ```sh
-python submit_api/chunk_service/json_to_ndjson_chunks.py input.json submit_api/chunk_service/test_data/out_dir \
+python submit_api/chunk_service/json_to_ndjson_chunks.py submit_api/chunk_service/test_data/input.json submit_api/chunk_service/test_data/out_dir \
   --exec-curl \
   --endpoint https://mc-a4.lab.uvalight.net/gd-cim-api/submit/ndjson \
   --bearer "$TOKEN"
