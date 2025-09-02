@@ -13,6 +13,7 @@ from metrics_store import store_metric, _col, _db, store_metrics_bulk
 from sqlalchemy import create_engine, Column, String, Integer
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from pymongo import InsertOne
+from pymongo.errors import PyMongoError
 from pymongo.write_concern import WriteConcern
 from datetime import datetime, timezone
 
@@ -622,25 +623,27 @@ async def submit_ndjson(request: Request, publisher_email: str = Depends(verify_
     # ---- Idempotency (only if both headers present) ----
     idem = request.headers.get("Idempotency-Key")
     seq_hdr = request.headers.get("X-Batch-Seq")
+    seq_int = None
     sess = None
     if idem is not None and seq_hdr is not None:
         try:
-            seq = int(seq_hdr)
+            seq_int = int(seq_hdr)
         except ValueError:
             raise HTTPException(status_code=400, detail="X-Batch-Seq must be an integer")
         sess = _db["ingest_sessions"]
-        try:
-            sess.insert_one({
-                "publisher_email": publisher_email,
-                "idempotency_key": idem,
-                "seq": seq,
-                "status": "in_progress",
-            })
-        except Exception as e:
-            # Duplicate => this (publisher, key, seq) already processed
-            if "E11000" in str(e):
-                return {"ok": True, "inserted": 0, "duplicate": True, "next_expected_seq": seq + 1}
-            raise
+        if sess:
+            try:
+                sess.insert_one({
+                    "publisher_email": publisher_email,
+                    "idempotency_key": idem,
+                    "seq": seq_int,
+                    "status": "in_progress",
+                })
+            except Exception as e:
+                # Duplicate => this (publisher, key, seq) already processed
+                if "E11000" in str(e):
+                    return {"ok": True, "inserted": 0, "duplicate": True, "next_expected_seq": seq + 1}
+                raise
 
     # ---- Streaming ingest with bulk flush ----
     col = _db.get_collection(_col.name, write_concern=WriteConcern(w="majority", j=True))
@@ -678,9 +681,14 @@ async def submit_ndjson(request: Request, publisher_email: str = Depends(verify_
                 "publisher_email": publisher_email,
                 "body": body
             }))
-    if ops:
-        col.bulk_write(ops, ordered=False, bypass_document_validation=True)
-        inserted += len(ops)
+    try:
+        if ops:
+            col.bulk_write(ops, ordered=False, bypass_document_validation=True)
+            inserted += len(ops)
+    except PyMongoError as e:
+        if sess and seq_int is not None:
+            sess.delete_one({"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq_int})
+        raise HTTPException(status_code=500, detail=f"Mongo bulk_write error: {e}")
 
     # ---- Finalise idempotency session ----
     if sess:

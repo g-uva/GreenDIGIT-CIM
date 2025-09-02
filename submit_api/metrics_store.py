@@ -20,8 +20,6 @@ INGEST_SESSIONS = "ingest_sessions"
 _client = MongoClient(MONGO_URI)
 _db = _client[DB_NAME]
 _col = _db[COLLECTION_NAME]
-_sess = _db[INGEST_SESSIONS]
-
 # For bulk idempotency resume (in case of network blip, 502, etc.)
 _sess = _db[INGEST_SESSIONS]
 _sess.create_index(

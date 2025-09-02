@@ -2,14 +2,13 @@ import argparse
 import gzip
 import hashlib
 import io
-import json
+import json, subprocess
 import sys
 import uuid
 import time, shlex
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Dict, Any
-import subprocess
 
 DEFAULT_CHUNK = 10_000
 
@@ -183,21 +182,10 @@ def main():
     except Exception as e:
         print(f"[progress] cannot create {progress_path}: {e}", file=sys.stderr, flush=True)
 
-    manifest_path = out_dir / "manifest.json"
-    print(f"[paths] progress={progress_path}", flush=True)
-    print(f"[paths] manifest={manifest_path}", flush=True)
-    
-    if manifest_path.exists():
-        with manifest_path.open("r", encoding="utf-8") as mf:
-            manifest = json.load(mf)
-        print(f"[manifest] Reusing existing manifest with {len(manifest.get('chunks', []))} chunks", flush=True)
-        # Skip chunking entirely
-        iterator = None
-    else:
         manifest = {
             "created_at": datetime.utcnow().isoformat() + "Z",
             "input": str(in_path),
-            "idempotency_key": args.idem_key,
+            "idempotency_key": idem,
             "chunk_size": args.chunk_size,
             "gzip": args.gzip,
             "prefix": args.prefix,
@@ -205,44 +193,37 @@ def main():
             "chunks": []
         }
 
+    manifest_path = out_dir / "manifest.json"
+    print(f"[paths] progress={progress_path}", flush=True)
+    print(f"[paths] manifest={manifest_path}", flush=True)
 
-    if args.idem_key:
-        idem = args.idem_key
+    reuse_manifest = manifest_path.exists()
+    if reuse_manifest:
+        with manifest_path.open("r", encoding="utf-8") as mf:
+            manifest = json.load(mf)
+        print(f"[manifest] Reusing existing manifest with {len(manifest.get('chunks', []))} chunks", flush=True)
+        idem = manifest.get("idempotency_key") or args.idem_key or str(uuid.uuid4())
+        iterator = None
     else:
-        idem = str(uuid.uuid4())
-
-    # Decide input format
-    input_fmt = args.input_format
-    if input_fmt == "auto":
-        # Peek first non-space char
-        with in_path.open("r", encoding="utf-8") as f:
-            first = f.read(1024)
-        first = first.lstrip()
-        if first.startswith("["):
-            input_fmt = "array"
-        else:
-            input_fmt = "ndjson"
-
-    if input_fmt == "array":
-        iterator = iter_json_array(in_path)
-    else:
-        iterator = iter_ndjson(in_path)
-
-    manifest = {
-        "created_at": datetime.utcnow().isoformat() + "Z",
-        "input": str(in_path),
-        "idempotency_key": idem,
-        "chunk_size": args.chunk_size,
-        "gzip": args.gzip,
-        "prefix": args.prefix,
-        "start_seq": args.start_seq,
-        "chunks": []
-    }
-
-    seq = args.start_seq
-    batch = []
-    total = 0
-
+        idem = args.idem_key or str(uuid.uuid4())
+        manifest = {
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "input": str(in_path),
+            "idempotency_key": idem,
+            "chunk_size": args.chunk_size,
+            "gzip": args.gzip,
+            "prefix": args.prefix,
+            "start_seq": args.start_seq,
+            "chunks": []
+        }
+        # only build iterator when we actually need to chunk
+        input_fmt = args.input_format
+        if input_fmt == "auto":
+            with in_path.open("r", encoding="utf-8") as f:
+                first = f.read(1024).lstrip()
+            input_fmt = "array" if first.startswith("[") else "ndjson"
+        iterator = iter_json_array(in_path) if input_fmt == "array" else iter_ndjson(in_path)
+    
     if iterator is not None:
         seq = manifest.get("start_seq", args.start_seq)
         batch, total = [], 0
@@ -258,7 +239,7 @@ def main():
                 total += len(batch)
                 batch = []
                 seq += 1
-                _save_manifest_atomic(manifest_path, manifest)  # <— incremental save
+                _save_manifest_atomic(manifest_path, manifest)  # incremental save
         if batch:
             out_path = out_dir / f"{args.prefix}_{seq:06d}.ndjson"
             meta = write_chunk(batch, out_path, args.gzip)
@@ -269,63 +250,12 @@ def main():
             total += len(batch)
             seq += 1
             _save_manifest_atomic(manifest_path, manifest)
-
-        # finalise summary and save
         manifest["total_records"] = total
         manifest["total_chunks"] = len(manifest["chunks"])
         _save_manifest_atomic(manifest_path, manifest)
     else:
-        # already chunked; ensure totals exist
+        # Already chunked earlier — make sure totals exist
         manifest.setdefault("total_chunks", len(manifest.get("chunks", [])))
-
-    # flush tail
-    if batch:
-        out_path = out_dir / f"{args.prefix}_{seq:06d}.ndjson"
-        meta = write_chunk(batch, out_path, args.gzip)
-        if args.verbose:
-            print(f"[write] seq={seq} path={meta['path']} count={meta['count']} size={meta['size_bytes']}B", flush=True)
-        meta.update({"seq": seq})
-        manifest["chunks"].append(meta)
-        total += len(batch)
-        _save_manifest_atomic(manifest_path, manifest) 
-        seq += 1
-
-    if args.verbose:
-        print(f"[write] seq={seq} path={meta['path']} count={meta['count']} size={meta['size_bytes']}B")
-
-    manifest["total_records"] = total
-    manifest["total_chunks"] = len(manifest["chunks"])
-
-    manifest_path = out_dir / "manifest.json"
-    print(f"[paths] progress={progress_path}", flush=True)
-    print(f"[paths] manifest={manifest_path}", flush=True)
-
-    reuse_manifest = manifest_path.exists()
-    if reuse_manifest:
-        with manifest_path.open("r", encoding="utf-8") as mf:
-            manifest = json.load(mf)
-        print(f"[manifest] Reusing existing manifest with {len(manifest.get('chunks', []))} chunks", flush=True)
-        idem = manifest.get("idempotency_key") or args.idem_key or str(uuid.uuid4())
-        iterator = None  # <- critically: skip chunking
-    else:
-        idem = args.idem_key or str(uuid.uuid4())
-        # manifest = {
-        #     "created_at": datetime.utcnow().isoformat() + "Z",
-        #     "input": str(in_path),
-        #     "idempotency_key": idem,
-        #     "chunk_size": args.chunk_size,
-        #     "gzip": args.gzip,
-        #     "prefix": args.prefix,
-        #     "start_seq": args.start_seq,
-        #     "chunks": []
-        # }
-        # only build iterator when we actually need to chunk
-        input_fmt = args.input_format
-        if input_fmt == "auto":
-            with in_path.open("r", encoding="utf-8") as f:
-                first = f.read(1024).lstrip()
-            input_fmt = "array" if first.startswith("[") else "ndjson"
-        iterator = iter_json_array(in_path) if input_fmt == "array" else iter_ndjson(in_path)
 
     resume_from = args.resume_from
     use_local = not args.no_resume_local
@@ -350,22 +280,14 @@ def main():
         if not args.bearer:
             raise SystemExit("--bearer is required when --auto-resume is set")
         # call status endpoint to get next_expected_seq
-        import subprocess, json as _json
         status_cmd = [
             "curl", "-sS",
             "-H", f"Authorization: Bearer {args.bearer}",
             f"{args.status_endpoint}?idempotency_key={idem}"
         ]
-        # out = subprocess.check_output(status_cmd, text=True)
-        # st = _json.loads(out)
-        # resume_from = st.get("next_expected_seq", 0)
-        # print(f"[auto-resume] next_expected_seq={resume_from} (processed={len(st.get('processed', []))}, missing={st.get('missing', [])})")
-        # srv_next = st.get("next_expected_seq", 0)
-        # # take the higher of local vs server
-        # resume_from = max(resume_from or 0, int(srv_next))
         
         out = subprocess.check_output(status_cmd, text=True)
-        st = _json.loads(out)
+        st = json.loads(out)
         srv_next = int(st.get("next_expected_seq", 0))
         print(f"[auto-resume] server_next={srv_next}", flush=True)
 
