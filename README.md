@@ -231,6 +231,19 @@ python -u submit_api/chunk_service/json_to_ndjson_chunks.py submit_api/chunk_ser
   --status-endpoint https://mc-a4.lab.uvalight.net/gd-cim-api/ingest/status \
   --endpoint        https://mc-a4.lab.uvalight.net/gd-cim-api/submit/ndjson \
   --bearer "$TOKEN"
+
+# first run
+python -u submit_api/chunk_service/json_to_ndjson_chunks.py input.json out_dir \
+  --idem-key "$IDEM" --exec-curl --verbose \
+  --endpoint https://mc-a4.lab.uvalight.net/gd-cim-api/submit/ndjson \
+  --bearer "$TOKEN"
+
+# if interrupted, just run the same command again
+# it will print [resume-local] ... and start from the next seq
+python -u submit_api/chunk_service/json_to_ndjson_chunks.py input.json out_dir \
+  --idem-key "$IDEM" --exec-curl --verbose --resume-local \
+  --endpoint https://mc-a4.lab.uvalight.net/gd-cim-api/submit/ndjson \
+  --bearer "$TOKEN"
 ```
 
 ### Batch/chunk tests (for dev, not end-user!)

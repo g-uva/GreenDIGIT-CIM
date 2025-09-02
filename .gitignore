@@ -12,3 +12,4 @@ pg_data/
 out_dir/
 input.json
 test_data/
+upload.log

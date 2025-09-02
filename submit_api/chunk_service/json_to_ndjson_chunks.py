@@ -157,12 +157,14 @@ def main():
     p.add_argument("--resume-from", type=int, default=None, help="Manually resume from this sequence number")
     p.add_argument("--verbose", action="store_true", help="Print detailed progress/logs")
     p.add_argument("--log-file", type=str, default=None, help="Append curl outputs to this file")
+    p.add_argument("--resume-local", action="store_true", help="Use local progress file to resume (default: on)")
     args = p.parse_args()
     
     logfh = open(args.log_file, "a") if args.log_file else None
     in_path = Path(args.input).expanduser().resolve()
     out_dir = Path(args.out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    progress_path = out_dir / "progress.jsonl"
 
     if args.idem_key:
         idem = args.idem_key
@@ -235,6 +237,20 @@ def main():
         json.dump(manifest, mf, indent=2)
 
     resume_from = args.resume_from
+    if args.resume_local and progress_path.exists():
+        try:
+            last = -1
+            with progress_path.open("r", encoding="utf-8") as pf:
+                for line in pf:
+                    if not line.strip(): continue
+                    rec = json.loads(line)
+                    last = max(last, int(rec.get("seq", -1)))
+            if last >= 0:
+                resume_from = max(resume_from or 0, last + 1)
+                print(f"[resume-local] last_ok_seq={last} -> resume_from={resume_from}", flush=True)
+        except Exception as e:
+            print(f"[resume-local] ignored ({e})", file=sys.stderr)
+
     if args.auto_resume:
         if not args.status_endpoint:
             raise SystemExit("--status-endpoint is required when --auto-resume is set")
@@ -251,12 +267,19 @@ def main():
         st = _json.loads(out)
         resume_from = st.get("next_expected_seq", 0)
         print(f"[auto-resume] next_expected_seq={resume_from} (processed={len(st.get('processed', []))}, missing={st.get('missing', [])})")
+        srv_next = st.get("next_expected_seq", 0)
+        # take the higher of local vs server
+        resume_from = max(resume_from or 0, int(srv_next))
+        print(f"[auto-resume] server_next={srv_next} -> resume_from={resume_from}", flush=True)
 
     upload_chunks = manifest["chunks"]
     print(f"[plan] total_chunks={len(manifest['chunks'])} uploading={len(upload_chunks)} "
         f"(resume_from={resume_from})", flush=True)
     if resume_from is not None:
         upload_chunks = [c for c in upload_chunks if c["seq"] >= int(resume_from)]
+
+    print(f"[plan] total={len(manifest['chunks'])} uploading={len(upload_chunks)} "
+        f"(resume_from={resume_from}; first_seq={upload_chunks[0]['seq'] if upload_chunks else 'N/A'})", flush=True)
 
     # Optionally print or execute curl commands
     if args.emit_curl or args.exec_curl:
@@ -293,6 +316,9 @@ def main():
                 ret = p.wait()
                 if not ok or ret != 0:
                     raise SystemExit(f"[ERROR] seq={c['seq']} upload failed (rc={ret})")
+                
+                with progress_path.open("a", encoding="utf-8") as pf:
+                    pf.write(json.dumps({"seq": c["seq"], "path": path, "ts": time.time()}) + "\n")
 
                 proc = subprocess.run(cmd, capture_output=True, text=True)
                 print((proc.stdout or "") + (proc.stderr or ""), flush=True)
