@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Request, Body
+from fastapi import FastAPI, Depends, HTTPException, status, Request, Body, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordRequestForm
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -754,3 +754,34 @@ async def submit_batch(
         # roll back the session marker so you can retry
         sess.delete_one({"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq})
         raise HTTPException(status_code=500, detail=r.get("error", "bulk insert failed"))
+
+
+@app.get("/ingest/status", tags=["Metrics"], summary="Report next expected seq for an idempotency key")
+def ingest_status(
+    idem_key: str = Query(..., alias="idempotency_key"),
+    publisher_email: str = Depends(verify_token),
+):
+    sess = _db["ingest_sessions"]
+    cur = sess.find(
+        {"publisher_email": publisher_email, "idempotency_key": idem_key},
+        {"_id": 0, "seq": 1, "status": 1}
+    )
+    records = list(cur)
+    if not records:
+        return {"next_expected_seq": 0, "processed": [], "in_progress": [], "missing": []}
+
+    done = sorted(r["seq"] for r in records if r.get("status") == "done")
+    in_prog = sorted(r["seq"] for r in records if r.get("status") == "in_progress")
+
+    next_seq = (max(done) + 1) if done else (min(in_prog) if in_prog else 0)
+
+    # optional: gaps to help diagnose partial uploads
+    max_seq = max(done) if done else -1
+    missing = [s for s in range(max_seq + 1) if s not in set(done)]
+
+    return {
+        "next_expected_seq": next_seq,
+        "processed": done,
+        "in_progress": in_prog,
+        "missing": missing
+    }

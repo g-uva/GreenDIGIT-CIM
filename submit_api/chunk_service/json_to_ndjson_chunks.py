@@ -152,6 +152,9 @@ def main():
     p.add_argument("--exec-curl", action="store_true", help="Execute curl for upload (requires curl installed)")
     p.add_argument("--endpoint", type=str, default=None, help="Upload endpoint, e.g. https://api.example/submit/ndjson")
     p.add_argument("--bearer", type=str, default=None, help="Bearer token for Authorization header")
+    p.add_argument("--auto-resume", action="store_true", help="Query server for next expected seq and resume from there")
+    p.add_argument("--status-endpoint", type=str, default=None, help="Ingest status endpoint, e.g. https://host/gd-cim-api/ingest/status")
+    p.add_argument("--resume-from", type=int, default=None, help="Manually resume from this sequence number")
     args = p.parse_args()
 
     in_path = Path(args.input).expanduser().resolve()
@@ -220,6 +223,28 @@ def main():
     manifest_path = out_dir / "manifest.json"
     with manifest_path.open("w", encoding="utf-8") as mf:
         json.dump(manifest, mf, indent=2)
+
+    resume_from = args.resume_from
+    if args.auto_resume:
+        if not args.status_endpoint:
+            raise SystemExit("--status-endpoint is required when --auto-resume is set")
+        if not args.bearer:
+            raise SystemExit("--bearer is required when --auto-resume is set")
+        # call status endpoint to get next_expected_seq
+        import subprocess, json as _json
+        status_cmd = [
+            "curl", "-sS",
+            "-H", f"Authorization: Bearer {args.bearer}",
+            f"{args.status_endpoint}?idempotency_key={idem}"
+        ]
+        out = subprocess.check_output(status_cmd, text=True)
+        st = _json.loads(out)
+        resume_from = st.get("next_expected_seq", 0)
+        print(f"[auto-resume] next_expected_seq={resume_from} (processed={len(st.get('processed', []))}, missing={st.get('missing', [])})")
+
+    upload_chunks = manifest["chunks"]
+    if resume_from is not None:
+        upload_chunks = [c for c in upload_chunks if c["seq"] >= int(resume_from)]
 
     # Optionally print or execute curl commands
     if args.emit_curl or args.exec_curl:
