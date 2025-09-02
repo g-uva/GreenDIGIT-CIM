@@ -205,6 +205,8 @@ def main():
         if len(batch) >= args.chunk_size:
             out_path = out_dir / f"{args.prefix}_{seq:06d}.ndjson"
             meta = write_chunk(batch, out_path, args.gzip)
+            if args.verbose:
+                print(f"[write] seq={seq} path={meta['path']} count={meta['count']} size={meta['size_bytes']}B", flush=True)
             meta.update({"seq": seq})
             manifest["chunks"].append(meta)
             total += len(batch)
@@ -214,6 +216,8 @@ def main():
     if batch:
         out_path = out_dir / f"{args.prefix}_{seq:06d}.ndjson"
         meta = write_chunk(batch, out_path, args.gzip)
+        if args.verbose:
+            print(f"[write] seq={seq} path={meta['path']} count={meta['count']} size={meta['size_bytes']}B", flush=True)
         meta.update({"seq": seq})
         manifest["chunks"].append(meta)
         total += len(batch)
@@ -249,6 +253,8 @@ def main():
         print(f"[auto-resume] next_expected_seq={resume_from} (processed={len(st.get('processed', []))}, missing={st.get('missing', [])})")
 
     upload_chunks = manifest["chunks"]
+    print(f"[plan] total_chunks={len(manifest['chunks'])} uploading={len(upload_chunks)} "
+        f"(resume_from={resume_from})", flush=True)
     if resume_from is not None:
         upload_chunks = [c for c in upload_chunks if c["seq"] >= int(resume_from)]
 
@@ -273,9 +279,21 @@ def main():
                 cmd = [
                     "curl", "--fail", "-sS", "-v", "-X", "POST", *headers,
                     "--data-binary", f"@{path}",
-                    "-w", "\nHTTP_STATUS=%{http_code}\n",    # print status line at end
+                    "-w", "\nHTTP_STATUS=%{http_code}\n",
                     args.endpoint,
                 ]
+
+                # stream output live (no buffering)
+                p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                ok = False
+                for line in p.stdout:
+                    print(line.rstrip(), flush=True)
+                    if line.startswith("HTTP_STATUS=2"):
+                        ok = True
+                ret = p.wait()
+                if not ok or ret != 0:
+                    raise SystemExit(f"[ERROR] seq={c['seq']} upload failed (rc={ret})")
+
                 proc = subprocess.run(cmd, capture_output=True, text=True)
                 print((proc.stdout or "") + (proc.stderr or ""), flush=True)
                 if proc.returncode != 0 or "HTTP_STATUS=2" not in proc.stdout + proc.stderr:

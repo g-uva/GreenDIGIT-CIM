@@ -225,6 +225,12 @@ db.ingest_sessions.find({
   publisher_email: "goncalo.ferreira@student.uva.nl",
   idempotency_key: "57f8c2cd-d9ae-4d90-bd87-4cdcb0624a35"
 })
+
+python -u submit_api/chunk_service/json_to_ndjson_chunks.py submit_api/chunk_service/test_data/input.json submit_api/chunk_service/test_data/out_dir \
+  --idem-key "$IDEM" --exec-curl --auto-resume --verbose \
+  --status-endpoint https://mc-a4.lab.uvalight.net/gd-cim-api/ingest/status \
+  --endpoint        https://mc-a4.lab.uvalight.net/gd-cim-api/submit/ndjson \
+  --bearer "$TOKEN"
 ```
 
 ### Batch/chunk tests (for dev, not end-user!)
