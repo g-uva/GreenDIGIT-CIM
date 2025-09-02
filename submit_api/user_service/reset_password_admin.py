@@ -1,8 +1,9 @@
 # reset_password_admin.py
-import sys, argparse
+import sys, argparse, os
 from passlib.context import CryptContext
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from login_server import User  # uses same model
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
