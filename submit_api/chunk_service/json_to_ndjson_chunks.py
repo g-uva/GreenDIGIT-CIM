@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Dict, Any
 
-DEFAULT_CHUNK = 10_000
+DEFAULT_CHUNK = 100_000
 
 def iter_json_array(file_path: Path) -> Iterator[Dict[str, Any]]:
     """

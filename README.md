@@ -128,7 +128,7 @@ We use [FastAPI](https://fastapi.tiangolo.com/)—a simple Python RESTful API se
 ### JSON to NDJSON Chunks Helper
 Basic conversion (auto-detects input format, writes chunks + manifest):
 ```sh
-python json_to_ndjson_chunks.py input.json out_dir
+python submit_api/chunk_service/json_to_ndjson_chunks.py input.json submit_api/chunk_service/test_data/out_dir
 ```
 
 Main options:
@@ -141,7 +141,7 @@ Main options:
 
 Generate curl commands (but don’t run them):
 ```sh
-python json_to_ndjson_chunks.py input.json out_dir \
+python submit_api/chunk_service/json_to_ndjson_chunks.py input.json submit_api/chunk_service/test_data/out_dir \
   --emit-curl \
   --endpoint https://mc-a4.lab.uvalight.net/gd-cim-api/submit/ndjson \
   --bearer "$TOKEN"
@@ -149,12 +149,13 @@ python json_to_ndjson_chunks.py input.json out_dir \
 
 Execute uploads (requires `curl` installed):
 ```sh
-python json_to_ndjson_chunks.py input.json out_dir \
+python submit_api/chunk_service/json_to_ndjson_chunks.py input.json submit_api/chunk_service/test_data/out_dir \
   --exec-curl \
   --endpoint https://mc-a4.lab.uvalight.net/gd-cim-api/submit/ndjson \
   --bearer "$TOKEN"
 ```
 
+### Batch/chunk tests (for dev, not end-user!)
 #### A. Bring services up
 ```bash
 # 1) Set env
@@ -178,16 +179,27 @@ curl -s -X POST -F 'username=goncalo.ferreira@student.uva.nl' -F 'password=gonca
 #### C. Small single JSON
 ```bash
 TOKEN=$JWT_TOKEN
-curl -s -X POST http://localhost:8000/gd-cim-api/submit   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json"   -d '{"cpu":0.7,"mem":1536}'
+curl -s -X POST http://localhost:8000/gd-cim-api/submit \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"cpu":0.7,"mem":1536}'
 ```
 
 #### D. Test /submit/batch (array + idempotency)
 ```bash
-curl -s -X POST http://localhost:8000/gd-cim-api/submit/batch   -H "Authorization: Bearer $TOKEN"   -H "Content-Type: application/json"   -H "Idempotency-Key: 11111111-1111-1111-1111-111111111111"   -H "X-Batch-Seq: 0"   -d '[{"metric":"cpu","value":0.1},{"metric":"mem","value":2}]'
+curl -s -X POST http://localhost:8000/gd-cim-api/submit/batch \
+  -H "Authorization: Bearer $TOKEN"   -H "Content-Type: application/json" \
+  -H "Idempotency-Key: 11111111-1111-1111-1111-111111111111" \
+  -H "X-Batch-Seq: 0" \
+  -d '[{"metric":"cpu","value":0.1},{"metric":"mem","value":2}]'
 # => {"ok":true,"inserted":2,"next_expected_seq":1}
 
 # Retry same request to verify de-dup
-curl -s -X POST http://localhost:8000/gd-cim-api/submit/batch   -H "Authorization: Bearer $TOKEN"   -H "Content-Type: application/json"   -H "Idempotency-Key: 11111111-1111-1111-1111-111111111111"   -H "X-Batch-Seq: 0"   -d '[{"metric":"cpu","value":0.1},{"metric":"mem","value":2}]'
+curl -s -X POST http://localhost:8000/gd-cim-api/submit/batch \
+  -H "Authorization: Bearer $TOKEN"   -H "Content-Type: application/json" \
+  -H "Idempotency-Key: 11111111-1111-1111-1111-111111111111" \
+  -H "X-Batch-Seq: 0" \
+  -d '[{"metric":"cpu","value":0.1},{"metric":"mem","value":2}]'
 # => {"ok":true,"inserted":0,"duplicate":true,"next_expected_seq":1}
 ```
 
@@ -202,17 +214,26 @@ curl -s -X POST http://localhost:8000/gd-cim-api/submit/ndjson   -H "Authorizati
 gzip -c tiny.ndjson | curl -s -X POST http://localhost:8000/gd-cim-api/submit/ndjson   -H "Authorization: Bearer $TOKEN"   -H "Content-Type: application/x-ndjson"   -H "Content-Encoding: gzip"   --data-binary @-
 ```
 
-#### F. Submit chunks
+#### F. Gen and submit chunks
 ```bash
 # Gen chunks
-python submit_api/gen_input.py  # creates input.json and out_chunks/ with a manifest and .gz chunks
+python submit_api/chunk_service/gen_input.py  # creates input.json and out_chunks/ with a manifest and .gz chunks
 
-python submit_api/json_to_ndjson_chunks.py input.json out_chunks   --gzip --exec-curl   --endpoint http://localhost:8000/gd-cim-api/submit/ndjson   --bearer "$TOKEN"
+# This command generates and automatically executes the submission.
+python submit_api/submit_api/chunk_service/json_to_ndjson_chunks.py input.json out_chunks \
+  --gzip --exec-curl \
+  --endpoint http://localhost:8000/gd-cim-api/submit/ndjson \
+  --bearer "$TOKEN"
 ```
 
 #### G. Test with batch
 ```bash
-curl -sS -X POST "$URL/gd-cim-api/submit/batch"   -H "Authorization: Bearer $TOKEN"   -H "Content-Type: application/json"   -H "Idempotency-Key: $(uuidgen)"   -H "X-Batch-Seq: 0"   --data-binary @input.json
+curl -sS -X POST "$URL/gd-cim-api/submit/batch" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H "X-Batch-Seq: 0" \
+  --data-binary @input.json
 ```
 
 ### Integration & Next Steps
