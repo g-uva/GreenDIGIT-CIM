@@ -202,8 +202,17 @@ python submit_api/chunk_service/json_to_ndjson_chunks.py submit_api/chunk_servic
 
 Execute uploads (requires `curl` installed):
 ```sh
+# generate UUID and save
+IDEM_KEY_LOC="submit_api/chunk_service/test_data/idem_key.txt"
+uuidgen > $IDEM_KEY_LOC
+
+# reuse later
+IDEM=$(cat $IDEM_KEY_LOC)
+echo "Using Idempotency-Key=$IDEM"
+
 python submit_api/chunk_service/json_to_ndjson_chunks.py submit_api/chunk_service/test_data/input.json submit_api/chunk_service/test_data/out_dir \
   --exec-curl \
+  --idem-key "$IDEM" --exec-curl \
   --endpoint https://mc-a4.lab.uvalight.net/gd-cim-api/submit/ndjson \
   --bearer "$TOKEN"
 ```
