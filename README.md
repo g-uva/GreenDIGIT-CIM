@@ -211,11 +211,20 @@ IDEM=$(cat $IDEM_KEY_LOC)
 echo "Using Idempotency-Key=$IDEM"
 
 python submit_api/chunk_service/json_to_ndjson_chunks.py submit_api/chunk_service/test_data/input.json submit_api/chunk_service/test_data/out_dir \
-  --exec-curl --auto-resume \
-  --idem-key "$IDEM" --exec-curl \
-  --status-endpoint https://mc-a4.lab.uvalight.net/gd-cim-api/ingest/status \
+  --idem-key "$IDEM" --exec-curl --verbose \
+  --resume-from 50 \
   --endpoint https://mc-a4.lab.uvalight.net/gd-cim-api/submit/ndjson \
-  --bearer "$TOKEN"
+  --bearer "$TOKEN" \
+  --log-file upload.log
+```
+
+```sh
+mongosh 
+use metricsdb
+db.ingest_sessions.find({
+  publisher_email: "goncalo.ferreira@student.uva.nl",
+  idempotency_key: "57f8c2cd-d9ae-4d90-bd87-4cdcb0624a35"
+})
 ```
 
 ### Batch/chunk tests (for dev, not end-user!)

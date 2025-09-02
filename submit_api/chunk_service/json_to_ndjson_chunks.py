@@ -5,7 +5,7 @@ import io
 import json
 import sys
 import uuid
-import subprocess
+import time, shlex
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Dict, Any
@@ -155,8 +155,11 @@ def main():
     p.add_argument("--auto-resume", action="store_true", help="Query server for next expected seq and resume from there")
     p.add_argument("--status-endpoint", type=str, default=None, help="Ingest status endpoint, e.g. https://host/gd-cim-api/ingest/status")
     p.add_argument("--resume-from", type=int, default=None, help="Manually resume from this sequence number")
+    p.add_argument("--verbose", action="store_true", help="Print detailed progress/logs")
+    p.add_argument("--log-file", type=str, default=None, help="Append curl outputs to this file")
     args = p.parse_args()
-
+    
+    logfh = open(args.log_file, "a") if args.log_file else None
     in_path = Path(args.input).expanduser().resolve()
     out_dir = Path(args.out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -216,6 +219,9 @@ def main():
         total += len(batch)
         seq += 1
 
+    if args.verbose:
+        print(f"[write] seq={seq} path={meta['path']} count={meta['count']} size={meta['size_bytes']}B")
+
     manifest["total_records"] = total
     manifest["total_chunks"] = len(manifest["chunks"])
 
@@ -253,22 +259,53 @@ def main():
         elif not args.bearer:
             print("--bearer is required for curl generation", file=sys.stderr)
         else:
-            for c in manifest["chunks"]:
+            for c in upload_chunks:
                 path = c["path"]
                 headers = [
-                    f"-H", f"Authorization: Bearer {args.bearer}",
-                    f"-H", f"Content-Type: application/x-ndjson",
-                    f"-H", f"Idempotency-Key: {manifest['idempotency_key']}",
-                    f"-H", f"X-Batch-Seq: {c['seq']}"
+                    "-H", f"Authorization: Bearer {args.bearer}",
+                    "-H", "Content-Type: application/x-ndjson",
+                    "-H", f"Idempotency-Key: {manifest['idempotency_key']}",
+                    "-H", f"X-Batch-Seq: {c['seq']}",
                 ]
                 if c.get("gzip"):
                     headers += ["-H", "Content-Encoding: gzip"]
-                cmd = ["curl", "-sS", "-X", "POST", *headers, "--data-binary", f"@{path}", args.endpoint]
+                # cmd = ["curl", "-sS", "-X", "POST", *headers, "--data-binary", f"@{path}", args.endpoint]
+                cmd = [
+                    "curl", "--fail", "-sS", "-v", "-X", "POST", *headers,
+                    "--data-binary", f"@{path}",
+                    "-w", "\nHTTP_STATUS=%{http_code}\n",    # print status line at end
+                    args.endpoint,
+                ]
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+                print((proc.stdout or "") + (proc.stderr or ""), flush=True)
+                if proc.returncode != 0 or "HTTP_STATUS=2" not in proc.stdout + proc.stderr:
+                    raise SystemExit(f"[ERROR] seq={c['seq']} upload failed")
+
                 if args.emit_curl:
-                    print(" ".join([shlex_quote(x) for x in cmd]))
+                    printable = " ".join(shlex.quote(x) for x in cmd)
+                    print(f"[emit] {printable}")
+
                 if args.exec_curl:
-                    print(f"# Uploading seq={c['seq']} path={path}")
-                    subprocess.check_call(cmd)
+                    if args.verbose:
+                        print(f"[upload] seq={c['seq']} -> {args.endpoint}")
+                    start = time.time()
+                    proc = subprocess.run(cmd, capture_output=True, text=True)
+                    out = (proc.stdout or "") + (proc.stderr or "")
+                    if args.verbose:
+                        print(out.strip())
+                    if logfh:
+                        logfh.write(f"\n=== seq {c['seq']} ===\n{out}\n")
+                        logfh.flush()
+
+                    # Fail if curl errored or HTTP not 2xx
+                    if proc.returncode != 0 or "HTTP_STATUS=2" not in out:
+                        if logfh: logfh.flush()
+                        raise SystemExit(f"[ERROR] seq={c['seq']} upload failed (rc={proc.returncode}). See --verbose/--log-file.")
+                    if args.verbose:
+                        dur = time.time() - start
+                        print(f"[ok] seq={c['seq']} uploaded in {dur:.2f}s")
+            if logfh:
+                logfh.close()
 
     print(f"Done. Wrote {manifest['total_chunks']} chunk(s) with {manifest['total_records']} record(s).")
     print(f"Idempotency-Key: {manifest['idempotency_key']}")

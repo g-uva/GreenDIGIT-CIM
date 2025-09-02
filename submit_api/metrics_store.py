@@ -10,8 +10,10 @@ from pymongo.errors import PyMongoError
 from pymongo.write_concern import WriteConcern
 from typing import List
 
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://metrics-db:27017/")
-DB_NAME = os.getenv("METRICS_DB_NAME", "metricsdb")
+# MONGO_URI = os.getenv("MONGO_URI", "mongodb://metrics-db:27017/")
+MONGO_URI = "mongodb://metrics-db:27017/" # Hardcoded :D
+# DB_NAME = os.getenv("METRICS_DB_NAME", "metricsdb")
+DB_NAME = "metricsdb"
 COLLECTION_NAME = os.getenv("METRICS_COLLECTION", "metrics")
 INGEST_SESSIONS = "ingest_sessions"
 

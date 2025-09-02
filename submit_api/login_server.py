@@ -613,14 +613,37 @@ def reset_password(
         500: {"description": "Database error"},
     },
 )
+
+@app.post("/submit/ndjson", tags=["Metrics"], summary="Stream NDJSON (optionally gzip) with safe bulk flush")
 async def submit_ndjson(request: Request, publisher_email: str = Depends(verify_token)):
-    # Gzip support
     content_encoding = (request.headers.get("Content-Encoding") or "").lower()
     decoder = zlib.decompressobj(16 + zlib.MAX_WBITS) if content_encoding == "gzip" else None
 
-    # Majority+journal write concern for integrity (tune later if needed)
-    col = _db.get_collection(_col.name, write_concern=WriteConcern(w="majority", j=True))
+    # ---- Idempotency (only if both headers present) ----
+    idem = request.headers.get("Idempotency-Key")
+    seq_hdr = request.headers.get("X-Batch-Seq")
+    sess = None
+    if idem is not None and seq_hdr is not None:
+        try:
+            seq = int(seq_hdr)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="X-Batch-Seq must be an integer")
+        sess = _db["ingest_sessions"]
+        try:
+            sess.insert_one({
+                "publisher_email": publisher_email,
+                "idempotency_key": idem,
+                "seq": seq,
+                "status": "in_progress",
+            })
+        except Exception as e:
+            # Duplicate => this (publisher, key, seq) already processed
+            if "E11000" in str(e):
+                return {"ok": True, "inserted": 0, "duplicate": True, "next_expected_seq": seq + 1}
+            raise
 
+    # ---- Streaming ingest with bulk flush ----
+    col = _db.get_collection(_col.name, write_concern=WriteConcern(w="majority", j=True))
     buf = b""
     ops, inserted = [], 0
 
@@ -643,7 +666,6 @@ async def submit_ndjson(request: Request, publisher_email: str = Depends(verify_
                 inserted += len(ops)
                 ops = []
 
-    # flush decoder tail & last line(s)
     if decoder:
         tail = decoder.flush()
         if tail:
@@ -660,7 +682,16 @@ async def submit_ndjson(request: Request, publisher_email: str = Depends(verify_
         col.bulk_write(ops, ordered=False, bypass_document_validation=True)
         inserted += len(ops)
 
+    # ---- Finalise idempotency session ----
+    if sess:
+        sess.update_one(
+            {"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq},
+            {"$set": {"status": "done", "inserted": inserted}}
+        )
+        return {"ok": True, "inserted": inserted, "next_expected_seq": seq + 1}
+
     return {"ok": True, "inserted": inserted}
+
 
 @app.post(
     "/submit/batch",
@@ -714,6 +745,7 @@ async def submit_batch(
     # Idempotency headers
     idem = request.headers.get("Idempotency-Key")
     seq  = request.headers.get("X-Batch-Seq")
+    
     if not idem or seq is None:
         raise HTTPException(status_code=400, detail="Missing Idempotency-Key or X-Batch-Seq")
 
@@ -726,19 +758,20 @@ async def submit_batch(
         raise HTTPException(status_code=422, detail="Body must be a JSON array of objects")
 
     # 1) try to register this (publisher,idempotency_key,seq)
-    sess = _db["ingest_sessions"]
-    try:
-        sess.insert_one({
-            "publisher_email": publisher_email,
-            "idempotency_key": idem,
-            "seq": seq,
-            "status": "in_progress",
-        })
-    except Exception as e:
-        # duplicate => already processed this exact segment
-        if "E11000" in str(e):
-            return {"ok": True, "inserted": 0, "duplicate": True, "next_expected_seq": seq + 1}
-        raise
+    sess = _db["ingest_sessions"] if (idem and seq is not None) else None
+    if sess:
+        seq = int(seq)
+        try:
+            sess.insert_one({
+                "publisher_email": publisher_email,
+                "idempotency_key": idem,
+                "seq": seq,
+                "status": "in_progress",
+            })
+        except Exception as e:
+            if "E11000" in str(e):
+                return {"ok": True, "inserted": 0, "duplicate": True, "next_expected_seq": seq + 1}
+            raise
 
     # 2) bulk insert
     r = store_metrics_bulk(publisher_email, body)
