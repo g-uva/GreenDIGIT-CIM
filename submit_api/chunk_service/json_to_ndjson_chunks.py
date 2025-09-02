@@ -9,6 +9,7 @@ import time, shlex
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Dict, Any
+import subprocess
 
 DEFAULT_CHUNK = 10_000
 
@@ -138,6 +139,12 @@ def write_chunk(records, out_path: Path, gzip_enabled: bool) -> Dict[str, Any]:
         size = out_path.stat().st_size
         return {"path": str(out_path), "count": len(records), "md5": md5_of_bytes(raw), "gzip": False, "size_bytes": size}
 
+def _save_manifest_atomic(path, data):
+    tmp = path.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8") as mf:
+        json.dump(data, mf, indent=2)
+    tmp.replace(path)
+
 def main():
     p = argparse.ArgumentParser(description="Convert a .json (array) or .ndjson to NDJSON chunks with idempotency manifest.")
     p.add_argument("input", type=str, help="Path to input file (.json array or .ndjson)")
@@ -157,14 +164,47 @@ def main():
     p.add_argument("--resume-from", type=int, default=None, help="Manually resume from this sequence number")
     p.add_argument("--verbose", action="store_true", help="Print detailed progress/logs")
     p.add_argument("--log-file", type=str, default=None, help="Append curl outputs to this file")
-    p.add_argument("--resume-local", action="store_true", help="Use local progress file to resume (default: on)")
+    # p.add_argument("--resume-local", action="store_true", help="Use local progress file to resume (default: on)")
+    p.add_argument("--no-resume-local", action="store_true", help="Disable local progress resume")
     args = p.parse_args()
     
     logfh = open(args.log_file, "a") if args.log_file else None
     in_path = Path(args.input).expanduser().resolve()
     out_dir = Path(args.out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    
+    print(f"[paths] out_dir={out_dir}", flush=True)
     progress_path = out_dir / "progress.jsonl"
+    try:
+        with progress_path.open("a", encoding="utf-8") as pf:
+            pf.write("")  # touch
+            pf.flush()
+            import os; os.fsync(pf.fileno())
+    except Exception as e:
+        print(f"[progress] cannot create {progress_path}: {e}", file=sys.stderr, flush=True)
+
+    manifest_path = out_dir / "manifest.json"
+    print(f"[paths] progress={progress_path}", flush=True)
+    print(f"[paths] manifest={manifest_path}", flush=True)
+    
+    if manifest_path.exists():
+        with manifest_path.open("r", encoding="utf-8") as mf:
+            manifest = json.load(mf)
+        print(f"[manifest] Reusing existing manifest with {len(manifest.get('chunks', []))} chunks", flush=True)
+        # Skip chunking entirely
+        iterator = None
+    else:
+        manifest = {
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "input": str(in_path),
+            "idempotency_key": args.idem_key,
+            "chunk_size": args.chunk_size,
+            "gzip": args.gzip,
+            "prefix": args.prefix,
+            "start_seq": args.start_seq,
+            "chunks": []
+        }
+
 
     if args.idem_key:
         idem = args.idem_key
@@ -202,9 +242,24 @@ def main():
     seq = args.start_seq
     batch = []
     total = 0
-    for rec in iterator:
-        batch.append(rec)
-        if len(batch) >= args.chunk_size:
+
+    if iterator is not None:
+        seq = manifest.get("start_seq", args.start_seq)
+        batch, total = [], 0
+        for rec in iterator:
+            batch.append(rec)
+            if len(batch) >= args.chunk_size:
+                out_path = out_dir / f"{args.prefix}_{seq:06d}.ndjson"
+                meta = write_chunk(batch, out_path, args.gzip)
+                if args.verbose:
+                    print(f"[write] seq={seq} path={meta['path']} count={meta['count']} size={meta['size_bytes']}B", flush=True)
+                meta.update({"seq": seq})
+                manifest["chunks"].append(meta)
+                total += len(batch)
+                batch = []
+                seq += 1
+                _save_manifest_atomic(manifest_path, manifest)  # <— incremental save
+        if batch:
             out_path = out_dir / f"{args.prefix}_{seq:06d}.ndjson"
             meta = write_chunk(batch, out_path, args.gzip)
             if args.verbose:
@@ -212,8 +267,17 @@ def main():
             meta.update({"seq": seq})
             manifest["chunks"].append(meta)
             total += len(batch)
-            batch = []
             seq += 1
+            _save_manifest_atomic(manifest_path, manifest)
+
+        # finalise summary and save
+        manifest["total_records"] = total
+        manifest["total_chunks"] = len(manifest["chunks"])
+        _save_manifest_atomic(manifest_path, manifest)
+    else:
+        # already chunked; ensure totals exist
+        manifest.setdefault("total_chunks", len(manifest.get("chunks", [])))
+
     # flush tail
     if batch:
         out_path = out_dir / f"{args.prefix}_{seq:06d}.ndjson"
@@ -223,6 +287,7 @@ def main():
         meta.update({"seq": seq})
         manifest["chunks"].append(meta)
         total += len(batch)
+        _save_manifest_atomic(manifest_path, manifest) 
         seq += 1
 
     if args.verbose:
@@ -231,13 +296,41 @@ def main():
     manifest["total_records"] = total
     manifest["total_chunks"] = len(manifest["chunks"])
 
-    # Save manifest.json
     manifest_path = out_dir / "manifest.json"
-    with manifest_path.open("w", encoding="utf-8") as mf:
-        json.dump(manifest, mf, indent=2)
+    print(f"[paths] progress={progress_path}", flush=True)
+    print(f"[paths] manifest={manifest_path}", flush=True)
+
+    reuse_manifest = manifest_path.exists()
+    if reuse_manifest:
+        with manifest_path.open("r", encoding="utf-8") as mf:
+            manifest = json.load(mf)
+        print(f"[manifest] Reusing existing manifest with {len(manifest.get('chunks', []))} chunks", flush=True)
+        idem = manifest.get("idempotency_key") or args.idem_key or str(uuid.uuid4())
+        iterator = None  # <- critically: skip chunking
+    else:
+        idem = args.idem_key or str(uuid.uuid4())
+        # manifest = {
+        #     "created_at": datetime.utcnow().isoformat() + "Z",
+        #     "input": str(in_path),
+        #     "idempotency_key": idem,
+        #     "chunk_size": args.chunk_size,
+        #     "gzip": args.gzip,
+        #     "prefix": args.prefix,
+        #     "start_seq": args.start_seq,
+        #     "chunks": []
+        # }
+        # only build iterator when we actually need to chunk
+        input_fmt = args.input_format
+        if input_fmt == "auto":
+            with in_path.open("r", encoding="utf-8") as f:
+                first = f.read(1024).lstrip()
+            input_fmt = "array" if first.startswith("[") else "ndjson"
+        iterator = iter_json_array(in_path) if input_fmt == "array" else iter_ndjson(in_path)
 
     resume_from = args.resume_from
-    if args.resume_local and progress_path.exists():
+    use_local = not args.no_resume_local
+    print(f"[resume-local] enabled={use_local} exists={progress_path.exists()}", flush=True)
+    if use_local and progress_path.exists():
         try:
             last = -1
             with progress_path.open("r", encoding="utf-8") as pf:
@@ -263,23 +356,33 @@ def main():
             "-H", f"Authorization: Bearer {args.bearer}",
             f"{args.status_endpoint}?idempotency_key={idem}"
         ]
+        # out = subprocess.check_output(status_cmd, text=True)
+        # st = _json.loads(out)
+        # resume_from = st.get("next_expected_seq", 0)
+        # print(f"[auto-resume] next_expected_seq={resume_from} (processed={len(st.get('processed', []))}, missing={st.get('missing', [])})")
+        # srv_next = st.get("next_expected_seq", 0)
+        # # take the higher of local vs server
+        # resume_from = max(resume_from or 0, int(srv_next))
+        
         out = subprocess.check_output(status_cmd, text=True)
         st = _json.loads(out)
-        resume_from = st.get("next_expected_seq", 0)
-        print(f"[auto-resume] next_expected_seq={resume_from} (processed={len(st.get('processed', []))}, missing={st.get('missing', [])})")
-        srv_next = st.get("next_expected_seq", 0)
-        # take the higher of local vs server
-        resume_from = max(resume_from or 0, int(srv_next))
+        srv_next = int(st.get("next_expected_seq", 0))
+        print(f"[auto-resume] server_next={srv_next}", flush=True)
+
+        if resume_from is None:
+            resume_from = srv_next
+        else:
+            resume_from = max(int(resume_from), srv_next)
+
+        print(f"[resume] effective resume_from={resume_from}", flush=True)
         print(f"[auto-resume] server_next={srv_next} -> resume_from={resume_from}", flush=True)
 
     upload_chunks = manifest["chunks"]
-    print(f"[plan] total_chunks={len(manifest['chunks'])} uploading={len(upload_chunks)} "
-        f"(resume_from={resume_from})", flush=True)
     if resume_from is not None:
         upload_chunks = [c for c in upload_chunks if c["seq"] >= int(resume_from)]
-
     print(f"[plan] total={len(manifest['chunks'])} uploading={len(upload_chunks)} "
-        f"(resume_from={resume_from}; first_seq={upload_chunks[0]['seq'] if upload_chunks else 'N/A'})", flush=True)
+        f"(resume_from={resume_from}; first_seq={upload_chunks[0]['seq'] if upload_chunks else 'N/A'})",
+        flush=True)
 
     # Optionally print or execute curl commands
     if args.emit_curl or args.exec_curl:
@@ -298,7 +401,7 @@ def main():
                 ]
                 if c.get("gzip"):
                     headers += ["-H", "Content-Encoding: gzip"]
-                # cmd = ["curl", "-sS", "-X", "POST", *headers, "--data-binary", f"@{path}", args.endpoint]
+
                 cmd = [
                     "curl", "--fail", "-sS", "-v", "-X", "POST", *headers,
                     "--data-binary", f"@{path}",
@@ -306,48 +409,28 @@ def main():
                     args.endpoint,
                 ]
 
-                # stream output live (no buffering)
-                p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-                ok = False
-                for line in p.stdout:
-                    print(line.rstrip(), flush=True)
-                    if line.startswith("HTTP_STATUS=2"):
-                        ok = True
-                ret = p.wait()
-                if not ok or ret != 0:
-                    raise SystemExit(f"[ERROR] seq={c['seq']} upload failed (rc={ret})")
-                
-                with progress_path.open("a", encoding="utf-8") as pf:
-                    pf.write(json.dumps({"seq": c["seq"], "path": path, "ts": time.time()}) + "\n")
-
-                proc = subprocess.run(cmd, capture_output=True, text=True)
-                print((proc.stdout or "") + (proc.stderr or ""), flush=True)
-                if proc.returncode != 0 or "HTTP_STATUS=2" not in proc.stdout + proc.stderr:
-                    raise SystemExit(f"[ERROR] seq={c['seq']} upload failed")
-
                 if args.emit_curl:
-                    printable = " ".join(shlex.quote(x) for x in cmd)
-                    print(f"[emit] {printable}")
+                    printable = " ".join(shlex_quote(x) for x in cmd)
+                    print(f"[emit] {printable}", flush=True)
 
                 if args.exec_curl:
-                    if args.verbose:
-                        print(f"[upload] seq={c['seq']} -> {args.endpoint}")
-                    start = time.time()
-                    proc = subprocess.run(cmd, capture_output=True, text=True)
-                    out = (proc.stdout or "") + (proc.stderr or "")
-                    if args.verbose:
-                        print(out.strip())
-                    if logfh:
-                        logfh.write(f"\n=== seq {c['seq']} ===\n{out}\n")
-                        logfh.flush()
+                    print(f"[upload] seq={c['seq']} file={path}", flush=True)
+                    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                    ok = False
+                    for line in p.stdout:
+                        print(line.rstrip(), flush=True)
+                        if line.startswith("HTTP_STATUS=2"):
+                            ok = True
+                    ret = p.wait()
+                    if not ok or ret != 0:
+                        raise SystemExit(f"[ERROR] seq={c['seq']} upload failed (rc={ret})")
 
-                    # Fail if curl errored or HTTP not 2xx
-                    if proc.returncode != 0 or "HTTP_STATUS=2" not in out:
-                        if logfh: logfh.flush()
-                        raise SystemExit(f"[ERROR] seq={c['seq']} upload failed (rc={proc.returncode}). See --verbose/--log-file.")
+                    # success → record progress (flush & fsync)
+                    with progress_path.open("a", encoding="utf-8") as pf:
+                        pf.write(json.dumps({"seq": c["seq"], "path": path, "ts": time.time()}) + "\n")
+                        pf.flush(); import os; os.fsync(pf.fileno())
                     if args.verbose:
-                        dur = time.time() - start
-                        print(f"[ok] seq={c['seq']} uploaded in {dur:.2f}s")
+                        print(f"[progress] wrote seq={c['seq']} to {progress_path}", flush=True)
             if logfh:
                 logfh.close()
 
