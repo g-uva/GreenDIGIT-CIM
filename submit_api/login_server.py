@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, status, Request, Body, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordRequestForm
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Any
 from passlib.context import CryptContext
@@ -16,6 +16,8 @@ from pymongo import InsertOne
 from pymongo.errors import PyMongoError
 from pymongo.write_concern import WriteConcern
 from datetime import datetime, timezone
+import traceback, uuid
+
 
 try:
     _db["ingest_sessions"].create_index(
@@ -118,6 +120,22 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security), 
         return email
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+@app.middleware("http")
+async def catch_all_errors(request: Request, call_next):
+    req_id = str(uuid.uuid4())[:8]
+    try:
+        response = await call_next(request)
+        return response
+    except Exception as e:
+        tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+        # Log full traceback to stdout (docker logs / journalctl)
+        print(f"[ERR {req_id}] {request.method} {request.url}\n{tb}", flush=True)
+        # Return JSON instead of plain text
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"{type(e).__name__}: {e}", "req_id": req_id}
+        )
 
 @app.post(
     "/login",
@@ -621,14 +639,23 @@ async def submit_ndjson(request: Request, publisher_email: str = Depends(verify_
                 "idempotency_key": idem,
                 "seq": seq_int,
                 "status": "in_progress",
-                "ts": datetime.now(timezone.utc).isoformat()
             })
+            # fresh session => proceed to stream & insert
         except Exception as e:
-            # Duplicate (requires the unique index from step 1)
             if "E11000" in str(e):
-                return {"ok": True, "inserted": 0, "duplicate": True, "next_expected_seq": seq_int + 1}
-            # Any other insert error => 500 with context
-            raise HTTPException(status_code=500, detail=f"Failed to register idempotency key: {e}")
+                # Already have a session row for this (pub, key, seq)
+                existing = sess.find_one(
+                    {"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq_int},
+                    {"status": 1, "_id": 0}
+                )
+                if existing and existing.get("status") == "done":
+                    # It really was finished earlier → just report duplicate
+                    return {"ok": True, "inserted": 0, "duplicate": True, "next_expected_seq": seq_int + 1}
+                # else: it was "in_progress" (crashed earlier) → **resume**:
+                # do NOT return; fall through and actually re-run the streaming ingest below,
+                # then mark status="done" at the end.
+            else:
+                raise
 
     # ---- Streaming ingest with bulk flush ----
     col = _db.get_collection(_col.name, write_concern=WriteConcern(w="majority", j=True))
@@ -680,22 +707,22 @@ async def submit_ndjson(request: Request, publisher_email: str = Depends(verify_
 
     except PyMongoError as e:
         # rollback idempotency marker so client can retry
-        if sess and seq_int is not None:
+        if ((sess is not None) is not None) and (seq_int is not None):
             sess.delete_one({"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq_int})
         raise HTTPException(status_code=500, detail=f"Mongo bulk_write error after {inserted} inserts (line {line_no}): {e}")
     except HTTPException:
         # re-raise structured 4xx errors from parsing
-        if sess and seq_int is not None:
+        if ((sess is not None) is not None) and (seq_int is not None):
             sess.delete_one({"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq_int})
         raise
     except Exception as e:
         # catch-all: always return JSON (not a blank 500)
-        if sess and seq_int is not None:
+        if ((sess is not None) is not None) and (seq_int is not None):
             sess.delete_one({"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq_int})
         raise HTTPException(status_code=500, detail=f"Unhandled error at line {line_no}: {type(e).__name__}: {e}")
 
     # ---- Finalise idempotency session ----
-    if sess and seq_int is not None:
+    if ((sess is not None) is not None) and (seq_int is not None):
         sess.update_one(
             {"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq_int},
             {"$set": {"status": "done", "inserted": inserted, "ts_done": datetime.now(timezone.utc).isoformat()}}
@@ -762,7 +789,7 @@ async def submit_batch(
         raise HTTPException(status_code=400, detail="Missing Idempotency-Key or X-Batch-Seq")
 
     try:
-        seq = int(seq)
+        seq_int = int(seq)
     except ValueError:
         raise HTTPException(status_code=400, detail="X-Batch-Seq must be an integer")
 
@@ -771,18 +798,18 @@ async def submit_batch(
 
     # 1) try to register this (publisher,idempotency_key,seq)
     sess = _db["ingest_sessions"] if (idem and seq is not None) else None
-    if sess:
+    if (sess is not None) is not None:
         seq = int(seq)
         try:
             sess.insert_one({
                 "publisher_email": publisher_email,
                 "idempotency_key": idem,
-                "seq": seq,
+                "seq": seq_int,
                 "status": "in_progress",
             })
         except Exception as e:
             if "E11000" in str(e):
-                return {"ok": True, "inserted": 0, "duplicate": True, "next_expected_seq": seq + 1}
+                return {"ok": True, "inserted": 0, "duplicate": True, "next_expected_seq": seq_int + 1}
             raise
 
     # 2) bulk insert
@@ -791,13 +818,13 @@ async def submit_batch(
     # 3) finalise
     if r.get("ok"):
         sess.update_one(
-            {"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq},
+            {"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq_int},
             {"$set": {"status": "done", "inserted": r["inserted"]}}
         )
-        return {"ok": True, "inserted": r["inserted"], "next_expected_seq": seq + 1}
+        return {"ok": True, "inserted": r["inserted"], "next_expected_seq": seq_int + 1}
     else:
         # roll back the session marker so you can retry
-        sess.delete_one({"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq})
+        sess.delete_one({"publisher_email": publisher_email, "idempotency_key": idem, "seq": seq_int})
         raise HTTPException(status_code=500, detail=r.get("error", "bulk insert failed"))
 
 

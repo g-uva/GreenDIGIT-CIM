@@ -298,10 +298,22 @@ def main():
 
         print(f"[resume] effective resume_from={resume_from}", flush=True)
         print(f"[auto-resume] server_next={srv_next} -> resume_from={resume_from}", flush=True)
+        
+        if (resume_from or 0) == 0 and srv_next == 0:
+            resume_from = 0  # re-send everything; do NOT adjust from manifest
+        else:
+            # only adjust from manifest if server has advanced
+            if resume_from == 0 and srv_next > 0:
+                local_last = max((c["seq"] for c in manifest.get("chunks", [])), default=-1)
+                if local_last >= 0:
+                    resume_from = local_last + 1
+                    print(f"[auto-resume] adjusted from manifest -> resume_from={resume_from}", flush=True)
+
 
     upload_chunks = manifest["chunks"]
     if resume_from is not None:
-        upload_chunks = [c for c in upload_chunks if c["seq"] >= int(resume_from)]
+        # upload_chunks = [c for c in upload_chunks if c["seq"] >= int(resume_from)]
+        upload_chunks = [c for c in upload_chunks if c["seq"] >= int(resume_from or 0)]
     print(f"[plan] total={len(manifest['chunks'])} uploading={len(upload_chunks)} "
         f"(resume_from={resume_from}; first_seq={upload_chunks[0]['seq'] if upload_chunks else 'N/A'})",
         flush=True)
@@ -356,7 +368,8 @@ def main():
             if logfh:
                 logfh.close()
 
-    print(f"Done. Wrote {manifest['total_chunks']} chunk(s) with {manifest['total_records']} record(s).")
+    print(f"Done. Wrote {manifest.get('total_chunks', len(manifest.get('chunks', [])))} "
+        f"chunk(s) with {manifest.get('total_records', 'N/A')} record(s).")
     print(f"Idempotency-Key: {manifest['idempotency_key']}")
     print(f"Manifest: {manifest_path}")
 

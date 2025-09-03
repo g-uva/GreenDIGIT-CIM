@@ -232,6 +232,18 @@ db.metrics.countDocuments({ publisher_email: "goncalo.ferreira@student.uva.nl" }
 # Show just the "body" field (the actual metric)
 db.metrics.find({ publisher_email: "goncalo.ferreira@student.uva.nl" }, { _id: 0, body: 1 }).limit(10).pretty()
 
+### DEV CLEANUP FOR A FRESH RUN (to test resume)
+db.ingest_sessions.updateMany(
+  { publisher_email: "goncalo.ferreira@student.uva.nl",
+    idempotency_key: "57f8c2cd-d9ae-4d90-bd87-4cdcb0624a35",
+    status: "in_progress"
+  },
+  { $set: { status: "stale" } }
+)
+
+# Delete all entries
+db.ingest_sessions.deleteMany({ idempotency_key: "57f8c2cd-d9ae-4d90-bd87-4cdcb0624a35" })
+
 # For the user to retrieve their metrics using the endpoint
 curl -sS -H "Authorization: Bearer $TOKEN" \
   https://mc-a4.lab.uvalight.net/gd-cim-api/metrics/me | jq .
@@ -243,12 +255,13 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
 
 ```sh
 # This is the command used to start/resume the submission of chunks.
+export TOKEN=$(cat submit_api/chunk_service/test_data/token_key.txt)
+export IDEM=$(cat submit_api/chunk_service/test_data/idem_key.txt)
 python -u submit_api/chunk_service/json_to_ndjson_chunks.py submit_api/chunk_service/test_data/input.json submit_api/chunk_service/test_data/out_dir \
   --idem-key "$IDEM" --exec-curl --auto-resume --verbose \
   --status-endpoint https://mc-a4.lab.uvalight.net/gd-cim-api/ingest/status \
   --endpoint        https://mc-a4.lab.uvalight.net/gd-cim-api/submit/ndjson \
   --bearer "$TOKEN"
-
 ```
 
 ### Batch/chunk tests (for dev, not end-user!)
