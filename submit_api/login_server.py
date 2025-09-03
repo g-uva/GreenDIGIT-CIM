@@ -40,7 +40,7 @@ tags_metadata = [
         "name": "Metrics",
         "description": "Submit and list metrics. **Requires** `Authorization: Bearer <token>`.",
     },
-]
+] 
 
 app = FastAPI(
     title="GreenDIGIT WP6.2 CIM Metrics API",
