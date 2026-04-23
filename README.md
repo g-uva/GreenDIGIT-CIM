@@ -1,6 +1,22 @@
 # GreenDIGIT-CIM Project
 This project implements the Common Information Model for GreenDIGIT with Unified Metric Namespace Mapping System. It enables ingestion, classification, and standard-aligned mapping of datacenter metrics from various formats and sources. The system supports metrics data from structured files (JSON, XML, CSV, YAML), unstructured text, and infrastructure's API sources.
 
+Related repositories:
+- [GreenDIGIT-project](https://github.com/GreenDIGIT-project)
+- [GreenDIGIT-AuthServer](https://github.com/g-uva/GreenDIGIT-AuthServer)
+- [GreenDIGIT-SQLAdapter](https://github.com/g-uva/GreenDIGIT-SQLAdapter)
+- [GreenDIGIT-KPIService](https://github.com/g-uva/GreenDIGIT-WP6-KPI-Service)
+
+*This work is funded from the European Union’s Horizon Europe research and innovation programme through the [GreenDIGIT project](https://greendigit-project.eu/), under the grant agreement No. [101131207](https://cordis.europa.eu/project/id/101131207)*.
+
+<!-- ![GreenDIGIT Logo](auth_metrics_server/static/cropped-GD_logo.png)
+![EU Logo](auth_metrics_server/static/EN-Funded-by-the-EU-POS-2.png) -->
+
+<div style="display:flex;align-items:center;width:100%;">
+  <img src="static/EN-Funded-by-the-EU-POS-2.png" alt="EU Logo" width="250px">
+  <img src="static/cropped-GD_logo.png" alt="GreenDIGIT Logo" width="110px" style="margin-right:100px">
+</div>
+
 # Project Structure
 cloud_metrics_api/ –> _Main application logic including ingestion, parsing, mapping, and API interface._
 
